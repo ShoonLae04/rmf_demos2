@@ -7,11 +7,18 @@
       <robot_name>TinyRobot1</robot_name>
       <level_name>L1</level_name>
 
-      <nominal_drive_speed>0.5</nominal_drive_speed>
+      <!-- <nominal_drive_speed>0.5</nominal_drive_speed>
       <nominal_drive_acceleration>0.25</nominal_drive_acceleration>
       <max_drive_acceleration>0.75</max_drive_acceleration>
 
       <nominal_turn_speed>0.6</nominal_turn_speed>
+      <nominal_turn_acceleration>1.5</nominal_turn_acceleration>
+      <max_turn_acceleration>2.0</max_turn_acceleration> -->
+      <nominal_drive_speed>5.0</nominal_drive_speed>
+      <nominal_drive_acceleration>1.0</nominal_drive_acceleration>
+      <max_drive_acceleration>1.75</max_drive_acceleration>
+
+      <nominal_turn_speed>0.8</nominal_turn_speed>
       <nominal_turn_acceleration>1.5</nominal_turn_acceleration>
       <max_turn_acceleration>2.0</max_turn_acceleration>
 
