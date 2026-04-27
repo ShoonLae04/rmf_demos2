@@ -40,3 +40,27 @@ cleanerBotA:
       [79.30, -37.25, 0.0]
     ]
     finish_waypoint: "conference_room"
+
+  gm_security_room:
+    level_name: "L1"
+    path: [ [70.19, -51.67, 0.0],
+      [70.44, -52.24, 0.0],
+      [70.03, -52.81, 0.0]
+    ]
+    finish_waypoint: "gm_security_room"
+
+  head_isf1_room:
+    level_name: "L1"
+    path: [ [63.86, -51.83, 0.0],
+      [64.18, -52.48, 0.0],
+      [63.69, -52.97, 0.0]
+    ]
+    finish_waypoint: "head_isf1_room"
+
+  meeting_room1:
+    level_name: "L1"
+    path: [ [93.51, -35.66, 0.0],
+      [94.48, -35.50, 0.0],
+      [95.54, -35.74, 0.0]
+    ]
+    finish_waypoint: "meeting_room1"

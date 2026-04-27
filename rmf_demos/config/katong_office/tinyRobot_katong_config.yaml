@@ -35,7 +35,7 @@ rmf_fleet:
   lane_merge_distance: 0.08
   task_capabilities: # Specify the types of RMF Tasks that robots in this fleet are capable of performing
     loop: True
-    delivery: True
+    delivery: False
     clean: False
     finishing_request: "park" # [park, charge, nothing]
 
