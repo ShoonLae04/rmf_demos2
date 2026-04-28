@@ -1,5 +1,8 @@
 
 # generated files
+/build/
+/install/
+/log/
 **/log/
 **/__pycache__/
 *.pyc
