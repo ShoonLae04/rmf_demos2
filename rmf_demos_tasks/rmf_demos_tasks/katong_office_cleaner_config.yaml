@@ -39,7 +39,7 @@ cleanerBotA:
       [78.80, -37.10, 0.0],
       [79.30, -37.25, 0.0]
     ]
-    finish_waypoint: "conference_room"
+    finish_waypoint: "clean_conference_room"
 
   gm_security_room:
     level_name: "L1"
