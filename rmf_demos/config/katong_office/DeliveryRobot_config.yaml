@@ -29,9 +29,9 @@ rmf_fleet:
     power: 0.0 # W
   recharge_threshold: 0.10 # Battery level below which robots in this fleet will not operate
   recharge_soc: 1.0 # Battery level to which robots in this fleet should be charged up to during recharging tasks
-  publish_fleet_state: 10.0 # Publish frequency for fleet state, ensure that it is same as robot_state_update_frequency
+  publish_fleet_state: 15.0 # Publish frequency for fleet state, ensure that it is same as robot_state_update_frequency
   account_for_battery_drain: True
-  lane_merge_distance: 0.08
+  lane_merge_distance: 0.12
   task_capabilities: # Specify the types of RMF Tasks that robots in this fleet are capable of performing
     loop: False
     delivery: True
@@ -47,10 +47,10 @@ robots:
   DeliveryRobot1:
     address: "DeliveryRobot1"
     robot_config:
-      max_delay: 15.0 # allowed seconds of delay of the current itinerary before it gets interrupted and replanned
+      max_delay: 4.0 # Tuned for faster yet stable multi-fleet replanning
       filter_waypoints: False
     rmf_config:
-      robot_state_update_frequency: 10.0
+      robot_state_update_frequency: 15.0
       start:
         map_name: "L1"
         waypoint: "DeliveryRobot_charger"
