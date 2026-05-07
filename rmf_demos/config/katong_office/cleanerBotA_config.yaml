@@ -38,7 +38,7 @@ rmf_fleet:
     loop: False
     delivery: False
     clean: True
-    finishing_request: "park" # [park, charge, nothing]
+    finishing_request: "charge" # [park, charge, nothing]
 
 # CleanerBotA CONFIG =================================================================
 
