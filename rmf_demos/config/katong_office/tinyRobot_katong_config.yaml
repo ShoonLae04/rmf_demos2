@@ -9,8 +9,10 @@ rmf_fleet:
     user: "some_user"
     password: "some_password"
   limits:
-    linear: [0.25, 0.3] # velocity, acceleration
-    angular: [0.3, 0.55] # velocity, acceleration
+    # linear: [0.25, 0.3] # velocity, acceleration
+    # angular: [0.3, 0.55] # velocity, acceleration
+    linear: [0.375, 0.45] # velocity, acceleration
+    angular: [0.45, 0.825] # velocity, acceleration
   profile: # Robot profile is modelled as a circle
     footprint: 0.18 # radius in m
     vicinity: 0.28 # radius in m
