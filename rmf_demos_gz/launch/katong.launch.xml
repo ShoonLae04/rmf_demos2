@@ -128,11 +128,13 @@
     <let name="scan_motion_flag" if="$(var scan_require_motion)" value="--require-motion --motion-velocity-threshold $(var scan_motion_velocity_threshold)"/>
     <node pkg="rmf_demos_bridges"
           exec="scan_obstacle_detector"
+          name="scan_obstacle_detector_tinyrobot"
           output="screen"
-        args="--scan-topic $(var scan_topic) --min-consecutive-hits $(var scan_min_consecutive_hits) --no-auto-discover-scans $(var scan_motion_flag) --robot-name TinyRobot1 --classification-topic /obstacle_classifications"/>
+        args="--scan-topic /model/TinyRobot1/link/base_footprint/sensor/front_laser/scan --min-consecutive-hits $(var scan_min_consecutive_hits) --no-auto-discover-scans $(var scan_motion_flag) --robot-name TinyRobot1 --classification-topic /obstacle_classifications"/>
 
       <node pkg="rmf_demos_bridges"
         exec="scan_obstacle_detector"
+        name="scan_obstacle_detector_cleanerbota"
         output="screen"
         args="--scan-topic /cleanerbota_scan --min-consecutive-hits $(var scan_min_consecutive_hits) --no-auto-discover-scans $(var scan_motion_flag) --robot-name cleanerBotA_1 --classification-topic /obstacle_classifications"/>
   </group>

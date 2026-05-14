@@ -69,6 +69,7 @@ foreach(path ${traffic_editor_paths})
   set(ign_output_dir ${CMAKE_CURRENT_BINARY_DIR}/maps/${output_world_name}_ign)
   set(ign_output_world_path ${ign_output_dir}/${output_world_name}.world)
   set(ign_output_model_dir ${ign_output_dir}/models)
+  set(fuel_metal_cabinet_source $ENV{HOME}/.ignition/fuel/fuel.gazebosim.org/openrobotics/models/metalcabinetyellow/3)
 
   add_custom_command(
     OUTPUT ${ign_output_world_path}
@@ -95,6 +96,15 @@ foreach(path ${traffic_editor_paths})
     DIRECTORY ${ign_output_dir}
     DESTINATION share/${PROJECT_NAME}/maps
   )
+
+  if(EXISTS ${fuel_metal_cabinet_source})
+    file(MAKE_DIRECTORY ${CMAKE_INSTALL_PREFIX}/share/${PROJECT_NAME}/maps/${output_world_name}_ign/models/MetalCabinetYellow)
+    execute_process(
+      COMMAND ${CMAKE_COMMAND} -E copy_directory
+              ${fuel_metal_cabinet_source}
+              ${CMAKE_INSTALL_PREFIX}/share/${PROJECT_NAME}/maps/${output_world_name}_ign/models/MetalCabinetYellow
+    )
+  endif()
 
   ##############################################################################
   # Generate the nav graphs

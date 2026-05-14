@@ -14,7 +14,19 @@ from nav_msgs.msg import Odometry
 
 
 class ScanObstacleDetector(Node):
+    _supported_semantic_object_types = {'stain', 'obstacle', 'fire', 'unattended_bag'}
+
     def __init__(self, argv=sys.argv):
+        # Filter out ROS remapping arguments (--ros-args and everything after)
+        # to prevent argparse from misinterpreting ROS flags like -r as short options
+        argv_filtered = argv[:]
+        try:
+            ros_args_index = argv_filtered.index('--ros-args')
+            argv_filtered = argv_filtered[:ros_args_index]
+        except ValueError:
+            # --ros-args not present, use all args
+            pass
+
         parser = argparse.ArgumentParser()
         parser.add_argument('-s', '--scan-topic', default='/scan',
                             help='LaserScan topic to monitor')
@@ -47,6 +59,10 @@ class ScanObstacleDetector(Node):
                     help='Topic carrying obstacle classification JSON per robot')
         parser.add_argument('--classification-ttl-sec', type=float, default=3.0,
                     help='Seconds to keep latest obstacle classification for each robot')
+        parser.add_argument('--semantic-entity-topic', default='/sim_injected_entities',
+                help='Topic carrying injected entity metadata with optional object_type')
+        parser.add_argument('--semantic-alert-topic', default='/semantic_obstacle_alerts',
+                help='Topic to publish semantic obstacle alerts')
         parser.add_argument('--emit-static-structure-label', dest='emit_static_structure_label',
                     action='store_true',
                     help='Tag persistent scan returns as static structures')
@@ -63,7 +79,7 @@ class ScanObstacleDetector(Node):
         parser.add_argument('--robot-name', default='',
                             help='Optional robot name to include in alerts')
 
-        self.args, _ = parser.parse_known_args(argv[1:])
+        self.args, _ = parser.parse_known_args(argv_filtered[1:])
         super().__init__('scan_obstacle_detector')
 
         # QoS profiles for sensor data (best_effort, volatile)
@@ -82,8 +98,10 @@ class ScanObstacleDetector(Node):
         self._consecutive_hits = {}
         self._static_hits = {}
         self._last_alert_times = {}
+        self._semantic_last_alert_times = {}
         self._robot_velocities = {}
         self._obstacle_labels = {}
+        self._semantic_entities = {}
         self._missing_motion_logged = set()
 
         self._classification_sub = self.create_subscription(
@@ -91,6 +109,12 @@ class ScanObstacleDetector(Node):
             self.args.classification_topic,
             self._classification_callback,
             10)
+        self._semantic_entities_sub = self.create_subscription(
+            String,
+            self.args.semantic_entity_topic,
+            self._semantic_entities_callback,
+            10)
+        self._semantic_alert_pub = self.create_publisher(String, self.args.semantic_alert_topic, 10)
 
         self._topic_regex = None
         try:
@@ -146,6 +170,61 @@ class ScanObstacleDetector(Node):
             'confidence': confidence,
             'timestamp': time.time(),
         }
+
+    def _semantic_entities_callback(self, msg: String):
+        try:
+            payload = json.loads(msg.data)
+        except Exception:
+            return
+
+        entities = payload.get('entities', payload)
+        if isinstance(entities, dict):
+            entities = [entities]
+        if not isinstance(entities, list):
+            return
+
+        now = time.time()
+        for entry in entities:
+            if not isinstance(entry, dict):
+                continue
+
+            name = str(entry.get('name', '')).strip()
+            if not name:
+                continue
+
+            try:
+                x = float(entry.get('x', 0.0))
+                y = float(entry.get('y', 0.0))
+            except (TypeError, ValueError):
+                continue
+
+            object_type = self._normalized_semantic_object_type(
+                entry.get('object_type', entry.get('classification', 'obstacle')))
+            self._semantic_entities[name] = {
+                'name': name,
+                'x': x,
+                'y': y,
+                'level_name': str(entry.get('level_name', '')).strip(),
+                'object_type': object_type,
+                'active': bool(entry.get('active', True)),
+                'timestamp': now,
+            }
+
+    def _normalized_semantic_object_type(self, object_type: object) -> str:
+        semantic_type = str(object_type).strip().lower() if object_type else ''
+        if semantic_type in self._supported_semantic_object_types:
+            return semantic_type
+        return 'obstacle'
+
+    def _latest_semantic_entity(self):
+        active_entities = [
+            entity for entity in self._semantic_entities.values()
+            if entity.get('active', True)
+        ]
+        if not active_entities:
+            return None
+
+        return max(active_entities, key=lambda entity: entity.get('timestamp', 0.0))
 
     def _discover_odometry_topics(self):
         topic_names_and_types = self.get_topic_names_and_types(no_demangle=True)
@@ -399,6 +478,37 @@ class ScanObstacleDetector(Node):
             f"(robot={robot_name}, sector={sector}, bearing={bearing_deg:.1f}deg, "
             f"point=({point_x:.2f},{point_y:.2f}), hits={hit_count})")
         self._alert_pub.publish(String(data=json.dumps(payload)))
+        self._publish_semantic_alert(robot_name)
+
+    def _publish_semantic_alert(self, robot_name: str):
+        semantic_entity = self._latest_semantic_entity()
+        object_type = 'obstacle'
+        x = 0.0
+        y = 0.0
+
+        if semantic_entity is not None:
+            object_type = self._normalized_semantic_object_type(semantic_entity.get('object_type', 'obstacle'))
+            x = float(semantic_entity.get('x', 0.0))
+            y = float(semantic_entity.get('y', 0.0))
+
+        now = time.time()
+        alert_key = (self._normalized_robot_name(robot_name), object_type)
+        last_alert_time = self._semantic_last_alert_times.get(alert_key, 0.0)
+        if now - last_alert_time < self.args.cooldown_sec:
+            return
+
+        self._semantic_last_alert_times[alert_key] = now
+        payload = {
+            'timestamp': now,
+            'robot_name': robot_name,
+            'object_type': object_type,
+            'x': round(x, 3),
+            'y': round(y, 3),
+        }
+
+        self.get_logger().info(
+            f'[{robot_name}] Detected semantic object: {object_type} at ({x:.2f},{y:.2f})')
+        self._semantic_alert_pub.publish(String(data=json.dumps(payload)))
 
     def _health_check(self):
         if self._last_scan_time > 0.0:

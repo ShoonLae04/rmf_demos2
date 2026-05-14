@@ -7,16 +7,19 @@
   <arg name="bidding_time_window" default="2.0"/>
   <arg name="use_rmf_panel" default="false"/>
   <arg name="dashboard_config_file" default=""/>
-  <arg name="trigger_on_any_nearby" default="false"/>
+  <arg name="trigger_on_any_nearby" default="true"/>
   <arg name="use_cleaner_fleet" default="true"/>
   <arg name="use_mock_docker" default="true"/>
-  <arg name="use_scan_obstacle_detector" default="false"/>
+  <arg name="use_scan_obstacle_detector" default="true"/>
   <arg name="scan_topic" default="/scan"/>
   <arg name="scan_min_consecutive_hits" default="2"/>
   <arg name="scan_auto_discover" default="true"/>
   <arg name="scan_topic_regex" default=".*scan$"/>
   <arg name="scan_require_motion" default="false"/>
   <arg name="scan_motion_velocity_threshold" default="0.05"/>
+  <arg name="enable_fire_critical_response" default="true"/>
+  <arg name="fire_safe_distance_m" default="2.0"/>
+  <arg name="fire_alert_interval_seconds" default="2.0"/>
   <arg name="use_test_obstacle_classifier" default="false"/>
   <arg name="test_classifier_mode" default="task_aware"/>
   <arg name="test_classifier_task_aware_clean_type" default="puddle"/>
@@ -131,21 +134,30 @@
 
   <let name="perception_bridge_args" value=""/>
   <let name="perception_bridge_args" if="$(var trigger_on_any_nearby)" value="--trigger-on-any-nearby"/>
+  <let name="fire_critical_bridge_args" value=""/>
+  <let name="fire_critical_bridge_args" if="$(var enable_fire_critical_response)" value="--enable-fire-critical-response --fire-safe-distance-m $(var fire_safe_distance_m) --fire-alert-interval-seconds $(var fire_alert_interval_seconds)"/>
 
-  <node pkg="rmf_demos_bridges" exec="perception_bridge" output="screen" args="$(var perception_bridge_args)"/>
+  <node pkg="rmf_demos_bridges" exec="perception_bridge" output="screen" args="$(var perception_bridge_args) $(var fire_critical_bridge_args)"/>
 
   <group if="$(var use_scan_obstacle_detector)">
     <let name="scan_motion_flag" value=""/>
     <let name="scan_motion_flag" if="$(var scan_require_motion)" value="--require-motion --motion-velocity-threshold $(var scan_motion_velocity_threshold)"/>
-    <node pkg="rmf_demos_bridges"
-          exec="scan_obstacle_detector"
-          output="screen"
-          args="--scan-topic $(var scan_topic) --min-consecutive-hits $(var scan_min_consecutive_hits) --no-auto-discover-scans $(var scan_motion_flag) --robot-name TinyRobot1 --classification-topic /obstacle_classifications"/>
+            <node pkg="rmf_demos_bridges"
+              exec="scan_obstacle_detector"
+              name="scan_obstacle_detector_tinyrobot"
+              output="screen"
+              args="--scan-topic /tinyrobot_scan
+                    --robot-name TinyRobot1
+                    --classification-topic /tinyrobot1/obstacle_classifications"/>
 
-    <node pkg="rmf_demos_bridges"
+        <node pkg="rmf_demos_bridges"
           exec="scan_obstacle_detector"
+          name="scan_obstacle_detector_cleanerbota"
           output="screen"
-          args="--scan-topic /cleanerbota_scan --min-consecutive-hits $(var scan_min_consecutive_hits) --no-auto-discover-scans $(var scan_motion_flag) --robot-name cleanerBotA_1 --classification-topic /obstacle_classifications"/>
+          args="--scan-topic /cleanerbota_scan
+                --robot-name cleanerBotA_1
+                --classification-topic /cleanerbota/obstacle_classifications"/>
+
   </group>
 
   <group if="$(var use_test_obstacle_classifier)">

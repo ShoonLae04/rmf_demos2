@@ -8,7 +8,6 @@ import time
 from pathlib import Path
 
 import rclpy
-from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
 from std_msgs.msg import String
 
@@ -46,6 +45,10 @@ PRESET_MODELS = {
         'classification': 'barrel',
         'model_relpath': Path('models/barrel/model.sdf'),
     },
+    'fire': {
+        'classification': 'fire',
+        'model_relpath': Path('models/fire/model.sdf'),
+    },
 }
 
 
@@ -53,6 +56,8 @@ class SimObstacleInjector(Node):
     def __init__(self, argv=sys.argv):
         parser = argparse.ArgumentParser()
         parser.add_argument('--kind', choices=sorted(PRESET_MODELS.keys()), default='water_puddle')
+        parser.add_argument('--object-type', choices=['stain', 'obstacle', 'fire', 'unattended_bag'],
+                            default='obstacle', help='Optional semantic object type metadata')
         parser.add_argument('--name', default=None)
         parser.add_argument('--x', type=float, default=0.0)
         parser.add_argument('--y', type=float, default=0.0)
@@ -77,10 +82,13 @@ class SimObstacleInjector(Node):
         entity_name = self.args.name or f"{self.args.kind}_{int(time.time())}"
         payload = self._build_payload(entity_name, model_path)
 
-        if self.args.spawn:
+        if self.args.spawn and model_path is not None:
             self._try_spawn(entity_name, model_path)
 
         self._publish_payload(payload)
+        self.get_logger().info(
+            f'[Injector] Spawned object type={self.args.object_type} '
+            f'at x={self.args.x:.1f} y={self.args.y:.1f}')
         self.get_logger().info(
             f"Registered {self.args.kind} as {entity_name} on {self.args.register_topic}")
 
@@ -88,10 +96,19 @@ class SimObstacleInjector(Node):
         if self.args.model_path:
             return Path(self.args.model_path).expanduser().resolve()
 
-        assets_share = Path(get_package_share_directory('rmf_demos_assets'))
+        try:
+            from ament_index_python.packages import get_package_share_directory
+            assets_share = Path(get_package_share_directory('rmf_demos_assets'))
+        except Exception:
+            self.get_logger().warn(
+                '[Injector] rmf_demos_assets not found, running in simulation-only mode')
+            return None
+
         model_path = assets_share / PRESET_MODELS[self.args.kind]['model_relpath']
         if not model_path.exists():
-            raise FileNotFoundError(f'Model file not found: {model_path}')
+            self.get_logger().warn(
+                f'[Injector] Model file not found: {model_path}; running in simulation-only mode')
+            return None
         return model_path
 
     def _build_payload(self, entity_name: str, model_path: Path):
@@ -99,12 +116,13 @@ class SimObstacleInjector(Node):
         payload = {
             'name': entity_name,
             'classification': classification,
+            'object_type': self.args.object_type,
             'level_name': self.args.level_name,
             'x': self.args.x,
             'y': self.args.y,
             'z': self.args.z,
             'yaw': self.args.yaw,
-            'model_path': str(model_path),
+            'model_path': str(model_path) if model_path is not None else '',
             'active': True,
         }
         return payload
