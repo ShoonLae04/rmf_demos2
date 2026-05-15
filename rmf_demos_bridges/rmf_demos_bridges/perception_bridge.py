@@ -75,8 +75,10 @@ class PerceptionBridge(Node):
         self._last_alert_time: Dict[Tuple[str, str, str], float] = {}
         self._semantic_last_alert_time: Dict[Tuple[str, str, float, float], float] = {}
         self._semantic_patrol_reaction_last_time: Dict[Tuple[str, str], float] = {}
-        # Fire critical response state machine: robot_name → {fire_active, fire_x, fire_y, detection_time, last_alert_time}
-        self._fire_state: Dict[str, Dict[str, object]] = {}
+        # TinyRobot1-only fire safety state and publisher map
+        self.robot_state = {'TinyRobot1': 'PATROL'}
+        self.robot_fire_state: Dict[str, Dict[str, object]] = {}
+        self._cmd_vel_publishers: Dict[str, object] = {}
         self._fire_alert_timer = self.create_timer(
             self.args.fire_alert_interval_seconds,
             self._fire_periodic_alert_timer_callback)
@@ -84,7 +86,7 @@ class PerceptionBridge(Node):
         self._alert_pub = self.create_publisher(String, self.args.alert_topic, 10)
         # Publisher for semantic alerts (used for fire critical alerts)
         self._semantic_pub = self.create_publisher(String, self.args.semantic_alerts_topic, 10)
-        # Generic cmd_vel publisher (best-effort zero velocity stop)
+        # Generic cmd_vel publisher kept for non-fire legacy paths
         self._cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self._robot_state_sub = self.create_subscription(
             RobotState,
@@ -102,6 +104,28 @@ class PerceptionBridge(Node):
             self._semantic_alerts_callback,
             10)
 
+    # Helper: compute distance between two objects/dicts with x,y
+    def compute_distance(self, a, b):
+        try:
+            ax = getattr(a, 'x', None)
+            ay = getattr(a, 'y', None)
+            if ax is None or ay is None:
+                ax = a.get('x') if isinstance(a, dict) else None
+                ay = a.get('y') if isinstance(a, dict) else None
+
+            bx = getattr(b, 'x', None)
+            by = getattr(b, 'y', None)
+            if bx is None or by is None:
+                bx = b.get('x') if isinstance(b, dict) else None
+                by = b.get('y') if isinstance(b, dict) else None
+
+            if ax is None or ay is None or bx is None or by is None:
+                return float('inf')
+
+            return math.sqrt((ax - bx) ** 2 + (ay - by) ** 2)
+        except Exception:
+            return float('inf')
+
     def _robot_state_callback(self, msg: RobotState):
         self._robots[msg.name] = {
             'x': msg.location.x,
@@ -110,6 +134,28 @@ class PerceptionBridge(Node):
             'mode': msg.mode.mode,
             'mode_name': self._mode_name(msg.mode.mode),
         }
+        # Ensure we have a per-robot cmd_vel publisher for continuous STOP publishing
+        if msg.name not in self._cmd_vel_publishers:
+            try:
+                topic = f'/{msg.name}/cmd_vel'
+                if msg.name == 'TinyRobot1':
+                    self._cmd_vel_publishers[msg.name] = self.create_publisher(Twist, topic, 10)
+                    self.get_logger().info(f'Created cmd_vel publisher for {msg.name}: {topic}')
+            except Exception:
+                # fallback remains global cmd_vel
+                pass
+
+        # TinyRobot1-only: re-evaluate cached fire entities whenever TinyRobot1 moves.
+        # This is the missing step when the fire was injected earlier and the robot later
+        # drives into range without receiving a new entity message.
+        if msg.name == 'TinyRobot1' and self._entities:
+            for entity in self._entities.values():
+                if str(entity.get('classification', '')).strip().lower() != 'fire':
+                    continue
+                try:
+                    self.handle_fire_tinyrobot1(self._robots[msg.name], entity)
+                except Exception as exc:
+                    self.get_logger().warn(f'Error re-evaluating TinyRobot1 fire on pose update: {exc}')
         self._evaluate_robot(msg.name)
 
     def _entities_callback(self, msg: String):
@@ -124,59 +170,25 @@ class PerceptionBridge(Node):
         for robot_name in list(self._robots.keys()):
             self._evaluate_robot(robot_name)
 
-        # Additional event-driven fire detection: if an injected entity is fire,
-        # compute distance to each robot and trigger semantic alert + stop when
-        # within safe distance.
+        # Additional event-driven fire detection: TinyRobot1 only
         for entity in entities:
             try:
                 ent_type = str(entity.get('classification', '')).strip().lower()
-                ent_x = float(entity.get('x', 0.0))
-                ent_y = float(entity.get('y', 0.0))
             except Exception:
                 continue
 
             if ent_type != 'fire':
                 continue
 
-            for robot_name, robot in self._robots.items():
-                norm_name = self._robot_key(robot_name)
-                if 'tinyrobot' not in norm_name:
-                    continue
+            robot_name = 'TinyRobot1'
+            robot = self._robots.get(robot_name)
+            if robot is None:
+                continue
 
-                robot_x = float(robot.get('x', 0.0))
-                robot_y = float(robot.get('y', 0.0))
-                distance = self._distance(robot_x, robot_y, ent_x, ent_y)
-                self.get_logger().debug(f'[FireDetection] computed distance {distance:.3f}m for {robot_name} -> {entity.get("name")}')
-
-                if distance < float(self.args.fire_safe_distance_m):
-                    timestamp = time.time()
-                    severity = 'critical'
-                    # Publish semantic alert message
-                    sem_payload = {
-                        'timestamp': timestamp,
-                        'robot_name': robot_name,
-                        'object_type': 'fire',
-                        'x': ent_x,
-                        'y': ent_y,
-                    }
-                    self.get_logger().info(f'[{robot_name}] Fire detected at distance {distance:.2f}m; publishing semantic alert')
-                    try:
-                        self._semantic_pub.publish(String(data=json.dumps(sem_payload)))
-                    except Exception as exc:
-                        self.get_logger().warn(f'Failed to publish semantic alert: {exc}')
-
-                    # Trigger existing semantic handling/state machine so periodic alerts and logging occur
-                    try:
-                        self._handle_fire_critical_response(
-                            robot_name,
-                            'fire',
-                            ent_x,
-                            ent_y,
-                            timestamp,
-                            entity_name=str(entity.get('name', '')).strip(),
-                            entity_active=bool(entity.get('active', True)))
-                    except Exception as exc:
-                        self.get_logger().warn(f'Error handling fire critical response: {exc}')
+            try:
+                self.handle_fire_tinyrobot1(robot, entity)
+            except Exception as exc:
+                self.get_logger().warn(f'Error processing fire event for {robot_name}: {exc}')
 
     def _semantic_alerts_callback(self, msg: String):
         try:
@@ -207,9 +219,31 @@ class PerceptionBridge(Node):
             return
 
         self._semantic_last_alert_time[alert_key] = timestamp
+        # If this is a fire semantic alert, use TinyRobot1-only processing
+        if object_type == 'fire':
+            if robot_name != 'TinyRobot1':
+                return
+            robot = self._robots.get('TinyRobot1')
+            if robot is None:
+                return
+            try:
+                fire_entity = {
+                    'x': x,
+                    'y': y,
+                    'name': '',
+                    'classification': 'fire',
+                    'active': True,
+                    'timestamp': timestamp
+                }
+
+                self.handle_fire_tinyrobot1(robot, fire_entity)
+            except Exception as exc:
+                self.get_logger().warn(f'Error processing semantic fire alert: {exc}')
+            return
+
+        # Non-fire semantic alerts keep the legacy behavior
         self._publish_semantic_alert(robot_name, object_type, severity, x, y, timestamp)
         self._maybe_log_semantic_patrol_reaction(robot_name, object_type, x, y, timestamp)
-        self._handle_fire_critical_response(robot_name, object_type, x, y, timestamp)
 
     def _semantic_object_type(self, object_type: object) -> str:
         semantic_type = str(object_type).strip().lower() if object_type else 'obstacle'
@@ -330,6 +364,100 @@ class PerceptionBridge(Node):
             self.get_logger().info(
                 f'[{robot_name}] Fire at ({x:.2f},{y:.2f}); waiting for safe distance {self.args.fire_safe_distance_m:.2f}m')
 
+    # --- TinyRobot1-only fire processing ---
+    def handle_fire_tinyrobot1(self, robot_pose: Dict[str, object], fire_pose: Dict[str, object]):
+        robot_name = 'TinyRobot1'
+        if not self.args.enable_fire_critical_response:
+            return
+
+        distance = self.compute_distance(robot_pose, fire_pose)
+
+        if robot_name not in self.robot_fire_state:
+            self.robot_fire_state[robot_name] = {
+                'fire_active': False,
+                'last_distance': None,
+            }
+
+        state = self.robot_fire_state[robot_name]
+        state['last_distance'] = distance
+
+        if distance > 2.0:
+            state['fire_active'] = False
+            self.robot_state[robot_name] = 'PATROL'
+            self.publish_resume(robot_name)
+            return
+
+        elif 1.5 < distance <= 2.0:
+            state['fire_active'] = True
+            self.robot_state[robot_name] = 'WARNING'
+            self.publish_alert(robot_name, 'FIRE_WARNING', distance)
+            return
+
+        elif distance <= 1.5:
+            state['fire_active'] = True
+            self.robot_state[robot_name] = 'STOPPED'
+            self.publish_alert(robot_name, 'FIRE_CRITICAL', distance)
+            self.publish_stop(robot_name)
+
+    def publish_alert(self, robot_name: str, alert_type: str, distance: float):
+        if robot_name != 'TinyRobot1':
+            return
+
+        severity = 'critical' if alert_type == 'FIRE_CRITICAL' else 'warning'
+        payload = {
+            'robot_name': robot_name,
+            'type': 'fire',
+            'severity': severity,
+            'distance': round(float(distance), 3),
+        }
+
+        self._alert_pub.publish(String(data=json.dumps(payload)))
+
+    def publish_stop(self, robot_name: str):
+        if robot_name != 'TinyRobot1':
+            return
+
+        msg = Twist()
+        msg.linear.x = 0.0
+        msg.angular.z = 0.0
+
+        pub = self._cmd_vel_publishers.get('TinyRobot1')
+        try:
+            if pub is not None:
+                pub.publish(msg)
+            else:
+                self._cmd_vel_pub.publish(msg)
+            self.get_logger().warn(f'[{robot_name}] FIRE STOP - within 1.5m')
+        except Exception as exc:
+            self.get_logger().warn(f'[{robot_name}] Failed to publish stop Twist: {exc}')
+
+    def publish_resume(self, robot_name: str):
+        if robot_name != 'TinyRobot1':
+            return
+
+        self.get_logger().info(f'[{robot_name}] Fire cleared - resume patrol')
+        resume_msg = {
+            'robot_name': robot_name,
+            'action': 'RESUME_PATROL'
+        }
+        try:
+            self._alert_pub.publish(String(data=json.dumps(resume_msg)))
+        except Exception as exc:
+            self.get_logger().warn(f'[{robot_name}] Failed publishing resume message: {exc}')
+
+    def publish_fire_alert(self, robot_name: str, severity: str, distance: float):
+        # severity: 'critical' | 'warning' | 'FIRE_CLEARED'
+        payload = {
+            'robot_name': robot_name,
+            'type': 'fire' if severity in ('critical', 'warning') else severity,
+            'severity': severity if severity in ('critical', 'warning') else 'cleared',
+            'distance': round(float(distance), 3),
+        }
+        try:
+            self._alert_pub.publish(String(data=json.dumps(payload)))
+        except Exception as exc:
+            self.get_logger().warn(f'[{robot_name}] Failed to publish fire alert: {exc}')
+
     def _fire_entity_still_present(self, fire_state: Dict[str, object]) -> bool:
         entity_name = str(fire_state.get('fire_entity_name', '')).strip()
         if not entity_name:
@@ -366,51 +494,45 @@ class PerceptionBridge(Node):
         """Publish periodic critical fire alerts for all active fire states."""
         if not self.args.enable_fire_critical_response:
             return
-
+        # Use robot-centric state to periodically enforce stops and alerts
         robots_to_clear = []
-        for robot_name, fire_state in self._fire_state.items():
-            if not fire_state['fire_active']:
+        for robot_name, state in list(self.robot_fire_state.items()):
+            if not state.get('fire_active'):
                 continue
 
-            if not self._fire_entity_still_present(fire_state):
+            robot = self._robots.get(robot_name)
+            last_distance = state.get('last_distance')
+
+            # If we don't have a recent distance or robot pose, skip enforcement
+            if last_distance is None or robot is None:
+                continue
+
+            # If distance > 2.0, clear
+            if last_distance > 2.0:
                 robots_to_clear.append(robot_name)
                 continue
 
-            robot = self._robots.get(robot_name, {})
-            fire_x = fire_state['fire_x']
-            fire_y = fire_state['fire_y']
+            # If critical zone, continuously publish stop
+            if last_distance <= 1.5:
+                self.publish_stop(robot_name)
+                # Also publish periodic critical alert
+                self.publish_fire_alert(robot_name, 'critical', last_distance)
+                continue
 
-            # Check if fire is still within safe distance (reversible)
-            if robot:
-                robot_x = float(robot.get('x', 0.0))
-                robot_y = float(robot.get('y', 0.0))
-                distance_to_fire = self._distance(robot_x, robot_y, fire_x, fire_y)
+            # Warning zone: periodic warning alert
+            if 1.5 < last_distance <= 2.0:
+                self.publish_fire_alert(robot_name, 'warning', last_distance)
 
-                # If fire distance exceeds safe zone, mark for clearing
-                if distance_to_fire > self.args.fire_safe_distance_m * 1.5:
-                    robots_to_clear.append(robot_name)
-                    continue
-
-                # Publish periodic critical alert
-                severity = 'critical'
-                object_type = 'fire'
-                timestamp = time.time()
-                self._publish_semantic_alert(robot_name, object_type, severity, fire_x, fire_y, timestamp)
-                self.get_logger().warn(
-                    f'[{robot_name}] Fire critical at ({fire_x:.2f},{fire_y:.2f}). '
-                    f'Distance {distance_to_fire:.2f}m. Patrol paused.')
-
-        # Clear fire state for robots where fire is far away (reversible state reset)
+        # Clear states for robots where fire is far away
         for robot_name in robots_to_clear:
-            if robot_name in self._fire_state:
-                old_state = self._fire_state[robot_name]
-                self.get_logger().info(
-                    f'[{robot_name}] Fire cleared (distance > {self.args.fire_safe_distance_m * 1.5:.2f}m). '
-                    f'Patrol may resume.')
-                self._fire_state[robot_name]['fire_active'] = False
-                self._fire_state[robot_name]['fire_entity_name'] = ''
-                self._fire_state[robot_name]['fire_entity_active'] = False
-                self._resume_robot_after_fire(robot_name)
+            st = self.robot_fire_state.get(robot_name)
+            if not st:
+                continue
+            self.get_logger().info(f'[{robot_name}] Fire cleared (distance {st.get("last_distance"):.2f}m). Patrol may resume.')
+            st['fire_active'] = False
+            # publish cleared alert and resume
+            self.publish_fire_alert(robot_name, 'FIRE_CLEARED', st.get('last_distance', 999.0))
+            self.publish_resume(robot_name)
 
     def _parse_entities_payload(self, payload: str):
         if not payload:

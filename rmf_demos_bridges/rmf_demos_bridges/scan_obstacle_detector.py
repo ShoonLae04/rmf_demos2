@@ -26,6 +26,7 @@ class ScanObstacleDetector(Node):
         except ValueError:
             # --ros-args not present, use all args
             pass
+        
 
         parser = argparse.ArgumentParser()
         parser.add_argument('-s', '--scan-topic', default='/scan',
@@ -79,6 +80,7 @@ class ScanObstacleDetector(Node):
         parser.add_argument('--robot-name', default='',
                             help='Optional robot name to include in alerts')
 
+      
         self.args, _ = parser.parse_known_args(argv_filtered[1:])
         super().__init__('scan_obstacle_detector')
 
@@ -103,6 +105,7 @@ class ScanObstacleDetector(Node):
         self._obstacle_labels = {}
         self._semantic_entities = {}
         self._missing_motion_logged = set()
+        self._robot_positions = {}  # robot_name -> (x, y)
 
         self._classification_sub = self.create_subscription(
             String,
@@ -248,12 +251,24 @@ class ScanObstacleDetector(Node):
             vx = msg.twist.twist.linear.x
             vy = msg.twist.twist.linear.y
             vz = msg.twist.twist.linear.z
+
             speed = math.sqrt(vx*vx + vy*vy + vz*vz)
+
+            x = msg.pose.pose.position.x
+            y = msg.pose.pose.position.y
+
             self._robot_velocities[robot_name] = speed
             self._robot_velocities[robot_name.lower()] = speed
+
+            self._robot_positions[robot_name] = (x, y)
+            self._robot_positions[self._normalized_robot_name(robot_name)] = (x, y)
+
         except Exception:
             pass
+    
 
+    def _distance(self, x1, y1, x2, y2):
+        return math.sqrt((x1-x2)**2 + (y1-y2)**2)
     def _normalized_robot_name(self, robot_name: str) -> str:
         return robot_name.strip().lower() if robot_name else ''
 
@@ -481,34 +496,62 @@ class ScanObstacleDetector(Node):
         self._publish_semantic_alert(robot_name)
 
     def _publish_semantic_alert(self, robot_name: str):
-        semantic_entity = self._latest_semantic_entity()
-        object_type = 'obstacle'
-        x = 0.0
-        y = 0.0
+        robot_key = self._normalized_robot_name(robot_name)
 
-        if semantic_entity is not None:
-            object_type = self._normalized_semantic_object_type(semantic_entity.get('object_type', 'obstacle'))
-            x = float(semantic_entity.get('x', 0.0))
-            y = float(semantic_entity.get('y', 0.0))
-
-        now = time.time()
-        alert_key = (self._normalized_robot_name(robot_name), object_type)
-        last_alert_time = self._semantic_last_alert_times.get(alert_key, 0.0)
-        if now - last_alert_time < self.args.cooldown_sec:
+        if robot_key not in self._robot_positions:
             return
 
-        self._semantic_last_alert_times[alert_key] = now
-        payload = {
-            'timestamp': now,
-            'robot_name': robot_name,
-            'object_type': object_type,
-            'x': round(x, 3),
-            'y': round(y, 3),
-        }
+        rx, ry = self._robot_positions[robot_key]
 
-        self.get_logger().info(
-            f'[{robot_name}] Detected semantic object: {object_type} at ({x:.2f},{y:.2f})')
-        self._semantic_alert_pub.publish(String(data=json.dumps(payload)))
+        now = time.time()
+
+        for entity in self._semantic_entities.values():
+
+            if not entity.get('active', True):
+                continue
+
+            object_type = self._normalized_semantic_object_type(
+                entity.get('object_type', 'obstacle')
+            )
+
+            ex = float(entity.get('x', 0.0))
+            ey = float(entity.get('y', 0.0))
+
+            dist = self._distance(rx, ry, ex, ey)
+
+            # ❗ ONLY CARE ABOUT NEAR OBJECTS
+            if dist > 2.0:
+                continue
+
+            if object_type == 'fire' and dist <= 1.5:
+                self.get_logger().error(
+                    f"CRITICAL FIRE STOP: {robot_name} within 1.5m"
+                )
+
+            alert_key = (robot_key, entity.get('name', 'unknown'))
+
+            last_time = self._semantic_last_alert_times.get(alert_key, 0.0)
+
+            if now - last_time < self.args.cooldown_sec:
+                continue
+
+            self._semantic_last_alert_times[alert_key] = now
+
+            payload = {
+                'timestamp': now,
+                'robot_name': robot_name,
+                'object_type': object_type,
+                'entity_name': entity.get('name', ''),
+                'distance': round(dist, 3),
+                'x': round(ex, 3),
+                'y': round(ey, 3),
+            }
+
+            self.get_logger().warn(
+                f"[{robot_name}] {object_type} detected at {dist:.2f}m"
+            )
+
+            self._semantic_alert_pub.publish(String(data=json.dumps(payload)))
 
     def _health_check(self):
         if self._last_scan_time > 0.0:
