@@ -15,6 +15,8 @@ from nav_msgs.msg import Odometry
 
 class ScanObstacleDetector(Node):
     _supported_semantic_object_types = {'stain', 'obstacle', 'fire', 'unattended_bag'}
+    _ignored_semantic_object_types = {'static_structure', 'unknown_obstacle'}
+    _meaningful_incident_types = {'fire', 'puddle', 'water_puddle', 'spill', 'spills', 'stain', 'stains', 'unattended_bag'}
 
     def __init__(self, argv=sys.argv):
         # Filter out ROS remapping arguments (--ros-args and everything after)
@@ -101,6 +103,8 @@ class ScanObstacleDetector(Node):
         self._static_hits = {}
         self._last_alert_times = {}
         self._semantic_last_alert_times = {}
+        self._semantic_alert_state = {}
+        self._semantic_state_ttl_sec = 3.0
         self._robot_velocities = {}
         self._obstacle_labels = {}
         self._semantic_entities = {}
@@ -413,6 +417,10 @@ class ScanObstacleDetector(Node):
         robot_name = self._resolve_robot_name(msg.header.frame_id, scan_topic)
         hit_key = (robot_name, scan_topic)
 
+        if min_distance < 0.15:
+            self._consecutive_hits[hit_key] = 0
+            return
+
         if min_distance >= self.args.range_threshold:
             self._consecutive_hits[hit_key] = 0
             return
@@ -445,22 +453,30 @@ class ScanObstacleDetector(Node):
         obstacle_type = 'unknown_obstacle'
         if classification:
             obstacle_type = classification['obstacle_type']
-        else:
-            static_key = (self._normalized_robot_name(robot_name), scan_topic, sector)
-            static_state = self._static_hits.get(static_key)
-            if static_state is None:
-                static_state = {'distance': min_distance, 'count': 1}
-            else:
-                if abs(min_distance - static_state['distance']) <= self.args.static_distance_epsilon:
-                    static_state['count'] += 1
-                else:
-                    static_state['count'] = 1
-                    static_state['distance'] = min_distance
-            self._static_hits[static_key] = static_state
 
-            if self.args.emit_static_structure_label and \
-                    static_state['count'] >= max(2, self.args.static_hit_threshold):
-                obstacle_type = self.args.static_obstacle_type
+        normalized_obstacle_type = str(obstacle_type).strip().lower()
+        if normalized_obstacle_type in self._ignored_semantic_object_types:
+            return
+
+        # Only meaningful semantic incidents should enter /rmf_demo_alerts.
+        if normalized_obstacle_type not in self._meaningful_incident_types:
+            return
+
+        static_key = (self._normalized_robot_name(robot_name), scan_topic, sector)
+        static_state = self._static_hits.get(static_key)
+        if static_state is None:
+            static_state = {'distance': min_distance, 'count': 1}
+        else:
+            if abs(min_distance - static_state['distance']) <= self.args.static_distance_epsilon:
+                static_state['count'] += 1
+            else:
+                static_state['count'] = 1
+                static_state['distance'] = min_distance
+        self._static_hits[static_key] = static_state
+
+        if self.args.emit_static_structure_label and \
+                static_state['count'] >= max(2, self.args.static_hit_threshold):
+            obstacle_type = self.args.static_obstacle_type
 
         payload = {
             'timestamp': now,
@@ -504,54 +520,84 @@ class ScanObstacleDetector(Node):
         rx, ry = self._robot_positions[robot_key]
 
         now = time.time()
+        best_entity = None
+        best_distance = float('inf')
 
         for entity in self._semantic_entities.values():
 
             if not entity.get('active', True):
                 continue
 
+            entity_age = now - float(entity.get('timestamp', 0.0))
+            if entity_age > self._semantic_state_ttl_sec:
+                continue
+
             object_type = self._normalized_semantic_object_type(
                 entity.get('object_type', 'obstacle')
             )
+
+            if object_type in self._ignored_semantic_object_types:
+                continue
+
+            if object_type not in self._meaningful_incident_types:
+                continue
 
             ex = float(entity.get('x', 0.0))
             ey = float(entity.get('y', 0.0))
 
             dist = self._distance(rx, ry, ex, ey)
 
-            # ❗ ONLY CARE ABOUT NEAR OBJECTS
-            if dist > 2.0:
+            # Ignore tiny self-clipping / wall hugging artifacts and stale far objects.
+            if dist < 0.15 or dist > 2.0:
                 continue
 
-            if object_type == 'fire' and dist <= 1.5:
-                self.get_logger().error(
-                    f"CRITICAL FIRE STOP: {robot_name} within 1.5m"
-                )
+            if dist < best_distance:
+                best_distance = dist
+                best_entity = entity
 
-            alert_key = (robot_key, entity.get('name', 'unknown'))
+        if best_entity is None:
+            return
 
-            last_time = self._semantic_last_alert_times.get(alert_key, 0.0)
+        object_type = self._normalized_semantic_object_type(best_entity.get('object_type', 'obstacle'))
+        ex = float(best_entity.get('x', 0.0))
+        ey = float(best_entity.get('y', 0.0))
+        alert_key = (robot_key, best_entity.get('name', 'unknown'), object_type)
+        last_state = self._semantic_alert_state.get(alert_key)
+        state_signature = (
+            round(best_distance, 2),
+            round(ex, 2),
+            round(ey, 2),
+            best_entity.get('level_name', '')
+        )
 
-            if now - last_time < self.args.cooldown_sec:
-                continue
+        if last_state is not None:
+            last_signature, last_time = last_state
+            if state_signature == last_signature and now - last_time < self.args.cooldown_sec:
+                return
 
-            self._semantic_last_alert_times[alert_key] = now
+        self._semantic_alert_state[alert_key] = (state_signature, now)
 
-            payload = {
-                'timestamp': now,
-                'robot_name': robot_name,
-                'object_type': object_type,
-                'entity_name': entity.get('name', ''),
-                'distance': round(dist, 3),
-                'x': round(ex, 3),
-                'y': round(ey, 3),
-            }
+        if object_type == 'fire':
+            severity = 'critical' if best_distance <= 1.5 else 'warning'
+        else:
+            severity = 'info'
 
-            self.get_logger().warn(
-                f"[{robot_name}] {object_type} detected at {dist:.2f}m"
-            )
+        payload = {
+            'timestamp': now,
+            'robot_name': robot_name,
+            'object_type': object_type,
+            'entity_name': best_entity.get('name', ''),
+            'distance': round(best_distance, 3),
+            'x': round(ex, 3),
+            'y': round(ey, 3),
+            'severity': severity,
+        }
 
-            self._semantic_alert_pub.publish(String(data=json.dumps(payload)))
+        self.get_logger().warn(
+            f"[{robot_name}] {object_type} detected at {best_distance:.2f}m"
+        )
+
+        self._semantic_alert_pub.publish(String(data=json.dumps(payload)))
 
     def _health_check(self):
         if self._last_scan_time > 0.0:

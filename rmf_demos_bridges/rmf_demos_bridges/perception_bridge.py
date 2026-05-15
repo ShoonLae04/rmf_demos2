@@ -213,12 +213,7 @@ class PerceptionBridge(Node):
             return
 
         timestamp = float(payload.get('timestamp', time.time()))
-        alert_key = (self._robot_key(robot_name), object_type, round(x, 3), round(y, 3))
-        last_alert = self._semantic_last_alert_time.get(alert_key)
-        if last_alert is not None and timestamp - last_alert < self.args.alert_cooldown_seconds:
-            return
 
-        self._semantic_last_alert_time[alert_key] = timestamp
         # If this is a fire semantic alert, use TinyRobot1-only processing
         if object_type == 'fire':
             if robot_name != 'TinyRobot1':
@@ -226,6 +221,13 @@ class PerceptionBridge(Node):
             robot = self._robots.get('TinyRobot1')
             if robot is None:
                 return
+
+            fire_alert_key = (self._robot_key(robot_name), 'fire', round(x, 3), round(y, 3))
+            last_fire_alert = self._semantic_last_alert_time.get(fire_alert_key)
+            if last_fire_alert is not None and timestamp - last_fire_alert < 0.2:
+                return
+
+            self._semantic_last_alert_time[fire_alert_key] = timestamp
             try:
                 fire_entity = {
                     'x': x,
@@ -240,6 +242,13 @@ class PerceptionBridge(Node):
             except Exception as exc:
                 self.get_logger().warn(f'Error processing semantic fire alert: {exc}')
             return
+
+        alert_key = (self._robot_key(robot_name), object_type, round(x, 3), round(y, 3))
+        last_alert = self._semantic_last_alert_time.get(alert_key)
+        if last_alert is not None and timestamp - last_alert < self.args.alert_cooldown_seconds:
+            return
+
+        self._semantic_last_alert_time[alert_key] = timestamp
 
         # Non-fire semantic alerts keep the legacy behavior
         self._publish_semantic_alert(robot_name, object_type, severity, x, y, timestamp)
@@ -391,6 +400,9 @@ class PerceptionBridge(Node):
             state['fire_active'] = True
             self.robot_state[robot_name] = 'WARNING'
             self.publish_alert(robot_name, 'FIRE_WARNING', distance)
+            # Fire alerts from /rmf_demo_alerts should still trigger stop behavior
+            # once TinyRobot1 enters the fire zone.
+            self.publish_stop(robot_name)
             return
 
         elif distance <= 1.5:
