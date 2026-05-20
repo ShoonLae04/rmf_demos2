@@ -548,7 +548,7 @@ class ScanObstacleDetector(Node):
             dist = self._distance(rx, ry, ex, ey)
 
             # Ignore tiny self-clipping / wall hugging artifacts and stale far objects.
-            if dist < 0.15 or dist > 2.0:
+            if dist < 0.15 or dist > 5.0:
                 continue
 
             if dist < best_distance:

@@ -56,6 +56,14 @@ class IncidentTaskDispatcher(Node):
                     help='FleetState topic used to track robot pose during puddle response')
         parser.add_argument('--cleaner-fleet-manager-prefix', default='http://127.0.0.1:22013',
                     help='Fleet manager base URL used for cleaner navigate/stop commands')
+        parser.add_argument('--tiny-fleet-manager-prefix', default='http://127.0.0.1:22011',
+                help='Fleet manager base URL used for TinyRobot stop/resume commands')
+        parser.add_argument('--tiny-fire-safe-distance-m', type=float, default=2.0,
+                help='Distance beyond which TinyRobot can resume after fire clears')
+        parser.add_argument('--tiny-fire-critical-distance-m', type=float, default=1.5,
+                help='Critical distance to enforce stop for TinyRobot when fire detected')
+        parser.add_argument('--tiny-name-token', default='tinyrobot',
+                help='Case-insensitive token used to identify TinyRobot names')
         parser.add_argument('--arrival-threshold-m', type=float, default=0.4,
                     help='Distance threshold to treat cleaner as arrived at puddle')
         parser.add_argument('--navigate-timeout-sec', type=float, default=60.0,
@@ -131,6 +139,10 @@ class IncidentTaskDispatcher(Node):
         self._robot_positions = {}
         self._next_cmd_id = {}
         self._cleaning_timer = self.create_timer(0.5, self._process_cleaning_work)
+
+        # TinyRobot fire response state
+        self._tiny_fire_work = {}
+        self._fire_timer = self.create_timer(0.5, self._process_fire_work)
 
         self.get_logger().info(
             f'Incident dispatcher active: enabled_types={sorted(self._enabled_types)}, '
@@ -218,6 +230,13 @@ class IncidentTaskDispatcher(Node):
             return
 
         obstacle_type = str(payload.get('obstacle_type', '')).strip().lower()
+        # Special-case fire handling for TinyRobot: handle even if not listed in enabled types
+        if obstacle_type == 'fire':
+            robot_name = str(payload.get('robot_name', '')).strip()
+            if robot_name and self._is_tiny_robot(robot_name):
+                if self._start_tiny_fire_workflow(payload):
+                    return
+
         if obstacle_type not in self._enabled_types:
             return
 
@@ -225,6 +244,12 @@ class IncidentTaskDispatcher(Node):
         if self._is_cleaner_robot(robot_name):
             if self._start_cleaner_workflow(payload, obstacle_type):
                 return
+
+        # Handle TinyRobot fire responses: stop/resume via fleet-manager
+        if obstacle_type == 'fire':
+            if robot_name and self._is_tiny_robot(robot_name):
+                if self._start_tiny_fire_workflow(payload):
+                    return
 
         confidence = float(payload.get('confidence', 1.0))
         if confidence < self.args.min_confidence:
@@ -386,6 +411,309 @@ class IncidentTaskDispatcher(Node):
             if self.args.resume_clean_after_local_response and bool(state.get('had_active_clean_task', False)):
                 zone = self._choose_resume_zone(state)
                 self._dispatch_resume_clean_task(zone, state)
+
+    # --- TinyRobot fire response helpers ---
+    def _is_tiny_robot(self, robot_name: str) -> bool:
+        token = str(self.args.tiny_name_token).strip().lower()
+        if not token:
+            return False
+        return token in robot_name.lower()
+
+    def _start_tiny_fire_workflow(self, payload: dict) -> bool:
+        obstacle_name = str(payload.get('obstacle_name', '')).strip()
+        level_name = str(payload.get('level_name', '')).strip()
+        robot_name = str(payload.get('robot_name', '')).strip()
+        if not robot_name:
+            return False
+
+        key = f'fire|{level_name}|{obstacle_name or robot_name}'
+        x = float(payload.get('obstacle_position', {}).get('x', payload.get('x', 0.0)))
+        y = float(payload.get('obstacle_position', {}).get('y', payload.get('y', 0.0)))
+
+        # Update existing entry if already active
+        if key in self._tiny_fire_work:
+            entry = self._tiny_fire_work[key]
+            entry['last_seen'] = time.time()
+            entry['x'] = x
+            entry['y'] = y
+            return True
+
+        # Attempt to stop the robot via fleet-manager
+        cmd_id = self._next_command_id(robot_name)
+        stop_path = (
+            '/open-rmf/rmf_demos_fm/stop_robot?'
+            f'robot_name={urllib.parse.quote(robot_name)}&cmd_id={cmd_id}'
+        )
+        url = self.args.tiny_fleet_manager_prefix.rstrip('/') + stop_path
+        stopped_ok = False
+        try:
+            req = urllib.request.Request(url, method='GET')
+            with urllib.request.urlopen(req, timeout=4.0) as resp:
+                text = resp.read().decode('utf-8').strip()
+            payload_resp = json.loads(text) if text else {}
+            stopped_ok = bool(payload_resp.get('success', True))
+        except (urllib.error.URLError, ValueError, TimeoutError) as err:
+            self.get_logger().warn(f'TinyRobot fleet stop failed for {url}: {err}')
+
+        now = time.time()
+        self._tiny_fire_work[key] = {
+            'robot_name': robot_name,
+            'obstacle_name': obstacle_name,
+            'level_name': level_name,
+            'x': x,
+            'y': y,
+            'started_at': now,
+            'last_seen': now,
+            'enforced': stopped_ok,
+        }
+
+        self._publish_status_alert(
+            robot_name=robot_name,
+            level_name=level_name,
+            obstacle_type='fire',
+            obstacle_name=obstacle_name,
+            x=x,
+            y=y,
+            action='TinyRobot: stop enforced' if stopped_ok else 'TinyRobot: stop attempted')
+
+        self.get_logger().info(f'TinyRobot fire workflow started for {robot_name} at ({x:.3f},{y:.3f})')
+        return True
+
+    def _process_fire_work(self):
+        if not self._tiny_fire_work:
+            return
+
+        now = time.time()
+        remove_keys = []
+        for key, state in list(self._tiny_fire_work.items()):
+            robot_name = str(state.get('robot_name', ''))
+            if not robot_name:
+                remove_keys.append(key)
+                continue
+
+            pose = self._robot_positions.get(robot_name)
+            if not pose:
+                # If we haven't seen the robot pose recently, skip
+                continue
+
+            dx = float(pose.get('x', 0.0)) - float(state.get('x', 0.0))
+            dy = float(pose.get('y', 0.0)) - float(state.get('y', 0.0))
+            distance = math.hypot(dx, dy)
+
+            # If too close, ensure stop is enforced (repeat stop if needed)
+            if distance <= float(self.args.tiny_fire_critical_distance_m):
+                if not bool(state.get('enforced', False)):
+                    # try to re-issue stop
+                    cmd_id = self._next_command_id(robot_name)
+                    stop_path = (
+                        '/open-rmf/rmf_demos_fm/stop_robot?'
+                        f'robot_name={urllib.parse.quote(robot_name)}&cmd_id={cmd_id}'
+                    )
+                    url = self.args.tiny_fleet_manager_prefix.rstrip('/') + stop_path
+                    try:
+                        req = urllib.request.Request(url, method='GET')
+                        with urllib.request.urlopen(req, timeout=4.0) as resp:
+                            text = resp.read().decode('utf-8').strip()
+                        payload_resp = json.loads(text) if text else {}
+                        state['enforced'] = bool(payload_resp.get('success', True))
+                    except (urllib.error.URLError, ValueError, TimeoutError) as err:
+                        self.get_logger().warn(f'TinyRobot fleet stop retry failed for {url}: {err}')
+                # still enforce; continue monitoring
+                continue
+
+            # If robot is safely beyond safe distance, resume
+            if distance > float(self.args.tiny_fire_safe_distance_m):
+                path = (
+                    '/open-rmf/rmf_demos_fm/toggle_action?'
+                    f'robot_name={urllib.parse.quote(robot_name)}'
+                )
+                url = self.args.tiny_fleet_manager_prefix.rstrip('/') + path
+                ok = False
+                try:
+                    data = json.dumps({'toggle': False}).encode('utf-8')
+                    req = urllib.request.Request(
+                        url,
+                        data=data,
+                        headers={'Content-Type': 'application/json'},
+                        method='POST')
+                    with urllib.request.urlopen(req, timeout=4.0) as resp:
+                        text = resp.read().decode('utf-8').strip()
+                    payload_resp = json.loads(text) if text else {}
+                    ok = bool(payload_resp.get('success', True))
+                except (urllib.error.URLError, ValueError, TimeoutError) as err:
+                    self.get_logger().warn(f'TinyRobot fleet resume failed for {url}: {err}')
+
+                if ok:
+                    self._publish_status_alert(
+                        robot_name=robot_name,
+                        level_name=str(state.get('level_name', '')),
+                        obstacle_type='fire',
+                        obstacle_name=str(state.get('obstacle_name', '')),
+                        x=float(state.get('x', 0.0)),
+                        y=float(state.get('y', 0.0)),
+                        action='TinyRobot: resumed after fire cleared')
+                    remove_keys.append(key)
+
+        for k in remove_keys:
+            self._tiny_fire_work.pop(k, None)
+
+    # --- TinyRobot fire workflow -------------------------------------------------
+    def _is_tiny_robot(self, robot_name: str) -> bool:
+        token = str(self.args.tiny_name_token).strip().lower()
+        if not token:
+            return False
+        return token in robot_name.lower()
+
+    def _start_tiny_fire_workflow(self, payload: dict) -> bool:
+        obstacle_name = str(payload.get('obstacle_name', '')).strip()
+        level_name = str(payload.get('level_name', '')).strip()
+        robot_name = str(payload.get('robot_name', '')).strip()
+        if not robot_name or not level_name:
+            return False
+
+        obstacle_position = payload.get('obstacle_position', {})
+        if not isinstance(obstacle_position, dict):
+            obstacle_position = {}
+        x = float(obstacle_position.get('x', payload.get('x', 0.0)))
+        y = float(obstacle_position.get('y', payload.get('y', 0.0)))
+
+        key = f'fire|{level_name}|{obstacle_name}' if obstacle_name else f'fire|{robot_name}'
+        if key in self._tiny_fire_work:
+            self._tiny_fire_work[key]['last_seen'] = time.time()
+            self._tiny_fire_work[key]['x'] = x
+            self._tiny_fire_work[key]['y'] = y
+            return True
+
+        # Issue stop command via TinyRobot fleet-manager
+        cmd_id = self._next_command_id(robot_name)
+        stop_path = (
+            '/open-rmf/rmf_demos_fm/stop_robot?'
+            f'robot_name={urllib.parse.quote(robot_name)}&cmd_id={cmd_id}'
+        )
+        url = self.args.tiny_fleet_manager_prefix.rstrip('/') + stop_path
+        stopped_ok = False
+        try:
+            req = urllib.request.Request(url, method='GET')
+            with urllib.request.urlopen(req, timeout=4.0) as resp:
+                text = resp.read().decode('utf-8').strip()
+            payload_resp = json.loads(text) if text else {}
+            stopped_ok = bool(payload_resp.get('success', True))
+        except (urllib.error.URLError, ValueError, TimeoutError) as err:
+            self.get_logger().warn(f'TinyRobot fleet GET failed for {url}: {err}')
+
+        self._tiny_fire_work[key] = {
+            'robot_name': robot_name,
+            'obstacle_name': obstacle_name,
+            'level_name': level_name,
+            'x': x,
+            'y': y,
+            'started_at': time.time(),
+            'last_seen': time.time(),
+            'stopped': stopped_ok,
+            'last_stop_attempt': time.time(),
+        }
+
+        self._publish_status_alert(
+            robot_name=robot_name,
+            level_name=level_name,
+            obstacle_type='fire',
+            obstacle_name=obstacle_name,
+            x=x,
+            y=y,
+            action='Stop enforced: fire response')
+
+        self.get_logger().info(f'TinyRobot fire workflow started for {robot_name} at ({x:.3f},{y:.3f})')
+        return True
+
+    def _process_fire_work(self):
+        if not self._tiny_fire_work:
+            return
+
+        now = time.time()
+        for key, state in list(self._tiny_fire_work.items()):
+            robot_name = str(state.get('robot_name', ''))
+            level_name = str(state.get('level_name', ''))
+            x = float(state.get('x', 0.0))
+            y = float(state.get('y', 0.0))
+
+            pose = self._robot_positions.get(robot_name)
+            if pose is None:
+                # If we have no pose, skip processing for now
+                continue
+
+            dx = float(pose.get('x', 0.0)) - x
+            dy = float(pose.get('y', 0.0)) - y
+            distance = math.hypot(dx, dy)
+
+            # If robot still very close to fire, enforce stop occasionally
+            try:
+                critical = float(self.args.tiny_fire_critical_distance_m)
+            except Exception:
+                critical = 1.5
+
+            try:
+                safe = float(self.args.tiny_fire_safe_distance_m)
+            except Exception:
+                safe = 2.0
+
+            if distance <= critical:
+                # re-issue stop if not attempted recently
+                if now - float(state.get('last_stop_attempt', 0.0)) > 2.0:
+                    cmd_id = self._next_command_id(robot_name)
+                    stop_path = (
+                        '/open-rmf/rmf_demos_fm/stop_robot?'
+                        f'robot_name={urllib.parse.quote(robot_name)}&cmd_id={cmd_id}'
+                    )
+                    url = self.args.tiny_fleet_manager_prefix.rstrip('/') + stop_path
+                    try:
+                        req = urllib.request.Request(url, method='GET')
+                        with urllib.request.urlopen(req, timeout=4.0) as resp:
+                            text = resp.read().decode('utf-8').strip()
+                        payload_resp = json.loads(text) if text else {}
+                        state['stopped'] = bool(payload_resp.get('success', True))
+                    except (urllib.error.URLError, ValueError, TimeoutError) as err:
+                        self.get_logger().warn(f'TinyRobot fleet GET failed for {url}: {err}')
+                    state['last_stop_attempt'] = now
+                continue
+
+            # If robot has moved beyond safe distance, attempt resume
+            if distance >= safe:
+                path = (
+                    '/open-rmf/rmf_demos_fm/toggle_action?'
+                    f'robot_name={urllib.parse.quote(robot_name)}'
+                )
+                url = self.args.tiny_fleet_manager_prefix.rstrip('/') + path
+                data = json.dumps({'toggle': False}).encode('utf-8')
+                req = urllib.request.Request(
+                    url,
+                    data=data,
+                    headers={'Content-Type': 'application/json'},
+                    method='POST')
+                resumed = False
+                try:
+                    with urllib.request.urlopen(req, timeout=4.0) as resp:
+                        text = resp.read().decode('utf-8').strip()
+                    payload_resp = json.loads(text) if text else {}
+                    resumed = bool(payload_resp.get('success', True))
+                except (urllib.error.URLError, ValueError, TimeoutError) as err:
+                    self.get_logger().warn(f'TinyRobot fleet POST failed for {url}: {err}')
+
+                if resumed:
+                    self._publish_status_alert(
+                        robot_name=robot_name,
+                        level_name=level_name,
+                        obstacle_type='fire',
+                        obstacle_name=str(state.get('obstacle_name', '')),
+                        x=x,
+                        y=y,
+                        action='Resumed after fire cleared')
+                    self.get_logger().info(f'TinyRobot {robot_name} resumed after fire cleared')
+                    try:
+                        del self._tiny_fire_work[key]
+                    except KeyError:
+                        pass
+                else:
+                    self.get_logger().warn(f'Failed to resume TinyRobot {robot_name} via fleet manager')
 
     def _robot_key(self, robot_name: str) -> str:
         return str(robot_name).strip().lower()
