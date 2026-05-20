@@ -28,7 +28,7 @@
   <arg name="test_classifier_ground_truth_topic" default="/obstacle_ground_truth"/>
   <arg name="use_incident_task_dispatcher" default="true"/>
   <arg name="incident_clean_zone" default="clean_inno_room"/>
-  <arg name="incident_enabled_obstacle_types" default="puddle,water_puddle,spill,spills,stain,stains,litter,leaf,leaves,hair,fair"/>
+  <arg name="incident_enabled_obstacle_types" default="puddle,water_puddle,spill,spills,stain,stains,litter,leaf,leaves,hair,fire"/>
   <arg name="incident_dispatch_cooldown_sec" default="180.0"/>
   <arg name="incident_allow_while_clean_active" default="false"/>
   <arg name="incident_min_confidence" default="0.6"/>
@@ -132,12 +132,12 @@
     </include>
   </group>
 
-  <let name="perception_bridge_args" value=""/>
-  <let name="perception_bridge_args" if="$(var trigger_on_any_nearby)" value="--trigger-on-any-nearby"/>
-  <let name="fire_critical_bridge_args" value=""/>
-  <let name="fire_critical_bridge_args" if="$(var enable_fire_critical_response)" value="--enable-fire-critical-response --fire-safe-distance-m $(var fire_safe_distance_m) --fire-alert-interval-seconds $(var fire_alert_interval_seconds)"/>
+  <!-- Build perception_bridge command line arguments -->
+  <let name="perception_bridge_cmd" value=""/>
+  <let name="perception_bridge_cmd" if="$(var trigger_on_any_nearby)" value="--trigger-on-any-nearby"/>
+  <let name="perception_bridge_cmd" if="$(var enable_fire_critical_response)" value="$(var perception_bridge_cmd) --enable-fire-critical-response --fire-safe-distance-m $(var fire_safe_distance_m) --fire-alert-interval-seconds $(var fire_alert_interval_seconds)"/>
 
-  <node pkg="rmf_demos_bridges" exec="perception_bridge" output="screen" args="$(var perception_bridge_args) $(var fire_critical_bridge_args)"/>
+  <node pkg="rmf_demos_bridges" exec="perception_bridge" output="screen" args="$(var perception_bridge_cmd) --ros-args"/>
 
   <group if="$(var use_scan_obstacle_detector)">
     <let name="scan_motion_flag" value=""/>
