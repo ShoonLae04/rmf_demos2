@@ -23,7 +23,9 @@ setup(
             ('fleet_socketio_bridge='
                 'rmf_demos_bridges.fleet_socketio_bridge:main',
              'fleet_robotmanager_mqtt_bridge='
-                'rmf_demos_bridges.fleet_robotmanager_mqtt_bridge:main'),
+                'rmf_demos_bridges.fleet_robotmanager_mqtt_bridge:main',
+             'mqtt_bridge='
+                'rmf_demos_bridges.mqtt_bridge:main'),
         ],
     },
 )

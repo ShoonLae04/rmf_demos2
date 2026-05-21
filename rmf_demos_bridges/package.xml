@@ -15,6 +15,7 @@
   <exec_depend>rmf_traffic_msgs</exec_depend>
   <exec_depend>rmf_building_map_tools</exec_depend>
   <exec_depend>rmf_site_map_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
   <exec_depend>python3-paho-mqtt</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
   <exec_depend>python3-pyproj</exec_depend>
