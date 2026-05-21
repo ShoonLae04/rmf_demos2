@@ -29,7 +29,7 @@ jobs:
     - name: checkout # This will check out the current rmf_demos branch for build tests
       uses: actions/checkout@v2
       with:
-        path: rmf_demos_ws/src/demonstrations/rmf_demos/
+        path: rmf_demos_ws/src/rmf_demos/
     - name: workspace
       run: |
         cd rmf_demos_ws
