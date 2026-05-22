@@ -21,10 +21,13 @@ setup(
     entry_points={
         'console_scripts': [
             'fleet_socketio_bridge=rmf_demos_bridges.fleet_socketio_bridge:main',
+            'sim_obstacle_injector=rmf_demos_bridges.sim_obstacle_injector:main',
+            'perception_bridge=rmf_demos_bridges.perception_bridge:main',
+            'scan_obstacle_detector=rmf_demos_bridges.scan_obstacle_detector:main',
+            'test_obstacle_classifier=rmf_demos_bridges.test_obstacle_classifier:main',
+            'test_obstacle_ground_truth_publisher=rmf_demos_bridges.test_obstacle_ground_truth_publisher:main',
+            'incident_task_dispatcher=rmf_demos_bridges.incident_task_dispatcher:main',
             'fleet_robotmanager_mqtt_bridge=rmf_demos_bridges.fleet_robotmanager_mqtt_bridge:main',
-            'mqtt_bridge=rmf_demos_bridges.mqtt_bridge:main',
-            'bridge_layer=rmf_demos_bridges.bridge_layer.main:main',
-            'bridge_publish_mock_workorder=rmf_demos_bridges.bridge_layer.tools.publish_mock_workorder:publish_once',
         ],
     },
 )

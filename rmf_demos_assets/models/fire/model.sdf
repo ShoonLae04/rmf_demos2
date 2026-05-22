@@ -1,0 +1,59 @@
+<?xml version="1.0" ?>
+<sdf version="1.7">
+  <model name="fire">
+    <static>true</static>
+
+    <link name="link">
+      <visual name="flame_base">
+        <pose>0 0 0.10 0 0 0</pose>
+        <geometry>
+          <sphere>
+            <radius>0.18</radius>
+          </sphere>
+        </geometry>
+        <material>
+          <ambient>1 0.15 0 1</ambient>
+          <diffuse>1 0.2 0 1</diffuse>
+          <emissive>1 0.2 0 1</emissive>
+        </material>
+      </visual>
+
+      <visual name="flame_middle">
+        <pose>0 0 0.32 0 0 0</pose>
+        <geometry>
+          <sphere>
+            <radius>0.24</radius>
+          </sphere>
+        </geometry>
+        <material>
+          <ambient>1 0.4 0 1</ambient>
+          <diffuse>1 0.55 0 1</diffuse>
+          <emissive>1 0.55 0 1</emissive>
+        </material>
+      </visual>
+
+      <visual name="flame_tip">
+        <pose>0 0 0.56 0 0 0</pose>
+        <geometry>
+          <sphere>
+            <radius>0.16</radius>
+          </sphere>
+        </geometry>
+        <material>
+          <ambient>1 0.8 0.1 1</ambient>
+          <diffuse>1 0.9 0.2 1</diffuse>
+          <emissive>1 0.9 0.2 1</emissive>
+        </material>
+      </visual>
+
+      <collision name="collision">
+        <geometry>
+          <cylinder>
+            <radius>0.12</radius>
+            <length>0.6</length>
+          </cylinder>
+        </geometry>
+      </collision>
+    </link>
+  </model>
+</sdf>

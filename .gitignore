@@ -1,5 +1,11 @@
 
 # generated files
+/build/
+/install/
+/log/
 **/log/
 **/__pycache__/
 *.pyc
+__pycache__/
+*.py[cod]
+.rmf_schedule_node.yaml

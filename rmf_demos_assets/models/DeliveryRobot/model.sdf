@@ -7,10 +7,13 @@
     <plugin name="slotcar" filename="libslotcar.so">
 
       <!-- Forward / Backward -->
-      <nominal_drive_speed>0.7</nominal_drive_speed>
-      <nominal_drive_acceleration>0.5</nominal_drive_acceleration>
+      <!-- <nominal_drive_speed>0.7</nominal_drive_speed> -->
+      <!-- <nominal_drive_acceleration>0.5</nominal_drive_acceleration> -->
       <!-- Theoretical no-slip limit with current suspension: 0.8 -->
-      <max_drive_acceleration>0.75</max_drive_acceleration>
+      <!-- <max_drive_acceleration>0.75</max_drive_acceleration> -->
+      <nominal_drive_speed>5</nominal_drive_speed>
+      <nominal_drive_acceleration>1</nominal_drive_acceleration>
+      <max_drive_acceleration>1.75</max_drive_acceleration>
 
       <!-- Turning -->
       <nominal_turn_speed>0.6</nominal_turn_speed>
