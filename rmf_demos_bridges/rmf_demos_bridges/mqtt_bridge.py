@@ -13,18 +13,19 @@ class MqttBridge(Node):
     def __init__(self):
         super().__init__('mqtt_bridge')
 
-        self.mqtt_host = 'localhost'
-        self.mqtt_port = 1883
+        self.mqtt_host = 'cd5921ff.ala.asia-southeast1.emqxsl.com'
+        self.mqtt_port = 8883
         self.mqtt_topic = 'rmf/demos/status'
 
         self.mqtt_user = None
         self.mqtt_password = None
+        self.client.tls_set()
 
         self.client = mqtt_client.Client(client_id='rmf_bridge_node')
 
         try:
             if self.mqtt_user and self.mqtt_password:
-                self.client.username_pw_set(self.mqtt_user, self.mqtt_password)
+                self.client.username_pw_set(CBM, Katong@123456)
 
             self.client.connect(self.mqtt_host, self.mqtt_port, 60)
             self.client.loop_start()

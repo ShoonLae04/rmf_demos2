@@ -24,12 +24,12 @@ class BridgeConfig:
     def from_env() -> "BridgeConfig":
         return BridgeConfig(
             mqtt_host=os.getenv("BRIDGE_MQTT_HOST", "localhost"),
-            mqtt_port=int(os.getenv("BRIDGE_MQTT_PORT", "1883")),
+            mqtt_port=int(os.getenv("BRIDGE_MQTT_PORT", "8883")),
             mqtt_username=os.getenv("BRIDGE_MQTT_USERNAME") or None,
             mqtt_password=os.getenv("BRIDGE_MQTT_PASSWORD") or None,
-            mqtt_tls_enabled=os.getenv("BRIDGE_MQTT_TLS", "false").lower() in ("1", "true", "yes"),
+            mqtt_tls_enabled=os.getenv("BRIDGE_MQTT_TLS", "true").lower() in ("1", "true", "yes"),
             mqtt_tls_ca_path=os.getenv("BRIDGE_MQTT_CA_PATH") or None,
-            mqtt_tls_insecure=os.getenv("BRIDGE_MQTT_TLS_INSECURE", "false").lower() in ("1", "true", "yes"),
+            mqtt_tls_insecure=os.getenv("BRIDGE_MQTT_TLS_INSECURE", "true").lower() in ("1", "true", "yes"),
             mqtt_topic_create=os.getenv("BRIDGE_TOPIC_CREATE", "digibase/workorder/v1/create"),
             mqtt_topic_update=os.getenv("BRIDGE_TOPIC_UPDATE", "digibase/workorder/v1/update"),
             mqtt_topic_dead_letter=os.getenv("BRIDGE_TOPIC_DLQ", "digibase/workorder/v1/dlq"),
