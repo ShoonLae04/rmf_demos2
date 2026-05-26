@@ -31,9 +31,9 @@ def build_mock_payload() -> dict[str, object]:
             },
             "task": {
                 "category": "patrol",
-                "description": {
+                "patrol": {
                     # list of waypoint/place names present in katong_office nav graph
-                    "places": ["reception_desk", "desk_person_a"],
+                    "places": ["meeting_room1"],
                     # number of rounds to patrol the route
                     "rounds": 1,
                 },

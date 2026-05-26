@@ -1,5 +1,6 @@
 import json
 import logging
+from typing import Any
 
 from ..contracts.inbound import RobotTarget, WorkOrder, WorkOrderCreateEvent, WorkOrderTask
 from ..contracts.ports import DeadLetterPublisherPort
@@ -37,18 +38,24 @@ class IntakeService:
                 robot=robot_target_obj["robot"],
             )
 
+        task_obj = work_order_obj["task"]
+        category = str(task_obj["category"]).strip().lower()
+
         work_order = WorkOrder(
             work_order_id=work_order_obj["work_order_id"],
             task=WorkOrderTask(
-                category=work_order_obj["task"]["category"],
-                description=work_order_obj["task"]["description"],
+                category=category,
+                description=IntakeService._normalize_task_description(category, task_obj),
             ),
             requester=work_order_obj.get("requester"),
             priority=work_order_obj.get("priority"),
             earliest_start_unix_ms=work_order_obj.get("earliest_start_unix_ms"),
             fleet_name=work_order_obj.get("fleet_name"),
             robot_target=robot_target,
-            metadata=work_order_obj.get("metadata", {}),
+            metadata={
+                str(k): str(v)
+                for k, v in work_order_obj.get("metadata", {}).items()
+            },
         )
         return WorkOrderCreateEvent(
             schema_version=obj["schema_version"],
@@ -59,3 +66,41 @@ class IntakeService:
             source_system=obj["source_system"],
             work_order=work_order,
         )
+
+    @staticmethod
+    def _normalize_task_description(category: str, task_obj: dict[str, Any]) -> dict[str, Any]:
+        # Accept both legacy `description` and business-friendly category blocks.
+        if category == "patrol":
+            details = IntakeService._task_details(task_obj, "patrol")
+            return {
+                "places": details.get("places"),
+                "rounds": details.get("rounds"),
+            }
+
+        if category == "delivery":
+            details = IntakeService._task_details(task_obj, "delivery")
+            return {
+                "pickup_place_name": details.get("pickup_place_name"),
+                "dropoff_place_name": details.get("dropoff_place_name"),
+            }
+
+        if category == "clean":
+            details = IntakeService._task_details(task_obj, "clean")
+            return {
+                "cleaning_zone": details.get("cleaning_zone"),
+            }
+
+        # Leave unknown categories untouched; mapper validation will reject them.
+        description = task_obj.get("description")
+        if isinstance(description, dict):
+            return description
+        raise ValueError(f"task.description must be an object for category '{category}'")
+
+    @staticmethod
+    def _task_details(task_obj: dict[str, Any], key: str) -> dict[str, Any]:
+        details = task_obj.get(key)
+        if details is None:
+            details = task_obj.get("description")
+        if not isinstance(details, dict):
+            raise ValueError(f"task.{key} or task.description must be an object")
+        return details

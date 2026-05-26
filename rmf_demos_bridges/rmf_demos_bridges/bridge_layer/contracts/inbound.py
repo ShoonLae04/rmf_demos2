@@ -15,6 +15,23 @@ class WorkOrderTask:
 
 
 @dataclass(frozen=True)
+class PatrolTaskDescription:
+    places: list[str]
+    rounds: int
+
+
+@dataclass(frozen=True)
+class DeliveryTaskDescription:
+    pickup_place_name: str
+    dropoff_place_name: str
+
+
+@dataclass(frozen=True)
+class CleanTaskDescription:
+    cleaning_zone: str
+
+
+@dataclass(frozen=True)
 class WorkOrder:
     work_order_id: str
     task: WorkOrderTask
