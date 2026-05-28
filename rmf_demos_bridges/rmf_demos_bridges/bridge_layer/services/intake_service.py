@@ -79,10 +79,7 @@ class IntakeService:
 
         if category == "delivery":
             details = IntakeService._task_details(task_obj, "delivery")
-            return {
-                "pickup_place_name": details.get("pickup_place_name"),
-                "dropoff_place_name": details.get("dropoff_place_name"),
-            }
+            return details
 
         if category == "clean":
             details = IntakeService._task_details(task_obj, "clean")

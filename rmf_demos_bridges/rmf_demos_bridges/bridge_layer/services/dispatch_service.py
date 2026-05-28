@@ -24,57 +24,33 @@ class DispatchService:
 
     def handle_create(self, event: WorkOrderCreateEvent) -> None:
         logger = logging.getLogger("bridge_layer.dispatch")
-        logger.info("    HANDLE_CREATE ENTERED: event_id=%s", event.event_id)
+        logger.info(" HANDLE_CREATE ENTERED: event_id=%s", event.event_id)
         if self._repository.seen_event(event.event_id):
             logger.warning("SKIPPING EVENT (already seen): %s", event.event_id)
             return
 
         try:
-           
-            if self._mapper.requires_robot_dispatch(event):
+
+            payload = self._mapper.to_dispatch_payload(event)
+            logger.info("RMF PAYLOAD: %s", payload)
+            logger.info("Dispatching dispatch_task for work_order=%s", event.work_order.work_order_id)
+            if event.work_order.robot_target is not None:
                 logger.info(
-                    "Using robot_task_request for fleet=%s robot=%s",
+                    "robot_target present; forwarding preference metadata: fleet=%s robot=%s",
                     event.work_order.robot_target.fleet,
                     event.work_order.robot_target.robot,
                 )
-
-                payload = self._mapper.to_robot_payload(event)
-
-                logger.info("RMF ROBOT PAYLOAD: %s", payload)
-
-                logger.info("CALLING RMF robot_task...")
-
-                response = self._rmf_api.robot_task(payload)
-
-
-
-            else:
-
-                logger.info(
-                    "Using dispatch_task_request for work_order=%s",
-                    event.work_order.work_order_id,
-                )
-
-                payload = self._mapper.to_dispatch_payload(event)
-
-                logger.info("RMF DISPATCH PAYLOAD: %s", payload)
-
-                logger.info("CALLING RMF dispatch_task...")
-
-                response = self._rmf_api.dispatch_task(payload)
+            logger.info("CALLING RMF dispatch_task...")
+            response = self._rmf_api.dispatch_task(payload)
 
             logger.info("RMF response: %s", response)
-
             rmf_task_id = self._extract_task_id(response)
-
             self._repository.mark_event_seen(event.event_id)
-
             self._repository.save_mapping(
                 work_order_id=event.work_order.work_order_id,
                 rmf_task_id=rmf_task_id,
                 tenant_id=event.tenant_id,
             )
-
             logger.info("Saved mapping work_order=%s -> rmf_task=%s", event.work_order.work_order_id, rmf_task_id)
         except Exception as err:
             print("ERROR:", err)

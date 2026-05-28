@@ -175,50 +175,66 @@ class WorkOrderToRmfRequestMapper:
 
     def _build_delivery_request(self, description: Any) -> dict[str, Any]:
         details = self._as_description_obj(description, "delivery")
-        pickup_name = self._extract_delivery_place_name(
+        pickup = self._extract_delivery_leg(
             details,
             primary_key="pickup",
-            legacy_key="pickup_place_name",
+            legacy_place_key="pickup_place_name",
+            legacy_handler_key="pickup_handler",
+            legacy_payload_key="pickup_payload",
             error_message="delivery.pickup_place_name or delivery.pickup.place is required",
         )
-        dropoff_name = self._extract_delivery_place_name(
+        dropoff = self._extract_delivery_leg(
             details,
             primary_key="dropoff",
-            legacy_key="dropoff_place_name",
+            legacy_place_key="dropoff_place_name",
+            legacy_handler_key="dropoff_handler",
+            legacy_payload_key="dropoff_payload",
             error_message="delivery.dropoff_place_name or delivery.dropoff.place is required",
         )
 
         return {
             "category": "delivery",
             "description": {
-                "pickup": {
-                    "place": pickup_name,
-                    "payload": [],
-                },
-                "dropoff": {
-                    "place": dropoff_name,
-                    "payload": [],
-                },
+                "pickup": pickup,
+                "dropoff": dropoff,
             },
         }
 
     @staticmethod
-    def _extract_delivery_place_name(
+    def _extract_delivery_leg(
         details: dict[str, Any],
         *,
         primary_key: str,
-        legacy_key: str,
+        legacy_place_key: str,
+        legacy_handler_key: str,
+        legacy_payload_key: str,
         error_message: str,
-    ) -> str:
+    ) -> dict[str, Any]:
         primary_value = details.get(primary_key)
         if isinstance(primary_value, dict):
             place = primary_value.get("place")
             if isinstance(place, str) and place.strip():
-                return place.strip()
+                leg: dict[str, Any] = {"place": place.strip()}
+                handler = primary_value.get("handler")
+                if isinstance(handler, str) and handler.strip():
+                    leg["handler"] = handler.strip()
+                payload = primary_value.get("payload")
+                if isinstance(payload, list):
+                    leg["payload"] = payload
+                else:
+                    leg["payload"] = []
+                return leg
 
-        legacy_value = details.get(legacy_key)
-        if isinstance(legacy_value, str) and legacy_value.strip():
-            return legacy_value.strip()
+        legacy_place = details.get(legacy_place_key)
+        if isinstance(legacy_place, str) and legacy_place.strip():
+            leg = {"place": legacy_place.strip(), "payload": []}
+            legacy_handler = details.get(legacy_handler_key)
+            if isinstance(legacy_handler, str) and legacy_handler.strip():
+                leg["handler"] = legacy_handler.strip()
+            legacy_payload = details.get(legacy_payload_key)
+            if isinstance(legacy_payload, list):
+                leg["payload"] = legacy_payload
+            return leg
 
         raise PayloadValidationError(error_message)
 
@@ -302,6 +318,10 @@ class WorkOrderToRmfRequestMapper:
         for key, value in event.work_order.metadata.items():
             labels.append(f"{key}={value}")
 
+        if event.work_order.robot_target is not None:
+            labels.append(f"preferred_fleet={event.work_order.robot_target.fleet}")
+            labels.append(f"preferred_robot={event.work_order.robot_target.robot}")
+
         request: dict[str, Any] = {
             "unix_millis_request_time": event.occurred_at_unix_ms,
             "labels": labels,
@@ -314,4 +334,6 @@ class WorkOrderToRmfRequestMapper:
             request["priority"] = {"type": "binary", "value": event.work_order.priority}
         if event.work_order.fleet_name:
             request["fleet_name"] = event.work_order.fleet_name
+        elif event.work_order.robot_target is not None:
+            request["fleet_name"] = event.work_order.robot_target.fleet
         return request
