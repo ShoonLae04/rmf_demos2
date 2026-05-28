@@ -1,5 +1,9 @@
+import logging
 import os
+import re
 from dataclasses import dataclass, field
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from ..contracts.inbound import WorkOrderCreateEvent
@@ -21,9 +25,75 @@ DEFAULT_KATONG_OFFICE_PLACES: tuple[str, ...] = (
     "DeliveryRobot_charger",
 )
 
+_PLACE_NAME_PATTERN = re.compile(r"\bname:\s*(?:\[\s*\d+\s*,\s*)?([A-Za-z0-9_]+)")
+
 
 class PayloadValidationError(ValueError):
     pass
+
+
+def get_valid_places(tenant_id: str) -> set[str]:
+    valid_places = _load_valid_places_from_rmf_sources(tenant_id)
+    if valid_places:
+        return valid_places
+    return set(DEFAULT_KATONG_OFFICE_PLACES)
+
+
+@lru_cache(maxsize=16)
+def _load_valid_places_from_rmf_sources(tenant_id: str) -> set[str]:
+    candidate_paths: list[Path] = []
+
+    for env_name in (
+        "BRIDGE_RMF_MAP_PATH",
+        "BRIDGE_RMF_MAP_DIR",
+        "BRIDGE_RMF_BUILDING_YAML",
+        "BRIDGE_RMF_NAV_GRAPH_PATH",
+    ):
+        env_value = os.getenv(env_name)
+        if env_value:
+            candidate_paths.append(Path(env_value).expanduser())
+
+    workspace_root = Path(__file__).resolve().parents[6]
+    candidate_paths.extend(
+        [
+            workspace_root / "install" / "rmf_demos_maps" / "share" / "rmf_demos_maps" / "maps" / tenant_id,
+            workspace_root / "src" / "rmf_demos" / "rmf_demos_maps" / "maps" / tenant_id,
+            workspace_root / "install" / "rmf_demos_maps" / "share" / "rmf_demos_maps" / tenant_id,
+            workspace_root / "src" / "rmf_demos" / "rmf_demos_maps" / "maps" / tenant_id / f"{tenant_id}.building.yaml",
+        ]
+    )
+
+    valid_places: set[str] = set()
+    for candidate in candidate_paths:
+        valid_places.update(_extract_place_names_from_path(candidate))
+
+    return valid_places
+
+
+def _extract_place_names_from_path(path: Path) -> set[str]:
+    if not path.exists():
+        return set()
+
+    if path.is_file():
+        files = [path]
+    else:
+        files = [candidate for candidate in path.rglob("*.yaml") if candidate.is_file()]
+
+    places: set[str] = set()
+    for file_path in files:
+        try:
+            content = file_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+
+        for line in content.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            for match in _PLACE_NAME_PATTERN.finditer(stripped):
+                places.add(match.group(1))
+
+    return places
 
 
 @dataclass
@@ -33,9 +103,6 @@ class WorkOrderToRmfRequestMapper:
             "BRIDGE_INCLUDE_OPTIONAL_RMF_FIELDS", "false"
         ).lower()
         in ("1", "true", "yes")
-    )
-    allowed_places: set[str] = field(
-        default_factory=lambda: set(DEFAULT_KATONG_OFFICE_PLACES)
     )
 
     def requires_robot_dispatch(self, event: WorkOrderCreateEvent) -> bool:
@@ -75,6 +142,8 @@ class WorkOrderToRmfRequestMapper:
                 f"unsupported category '{category}', expected patrol|delivery|clean"
             )
 
+        self._warn_for_unknown_places(event.tenant_id, request)
+
         if self.include_optional_rmf_fields:
             request.update(self._build_optional_request_fields(event))
 
@@ -96,7 +165,6 @@ class WorkOrderToRmfRequestMapper:
         if not isinstance(rounds, int) or rounds < 1:
             raise PayloadValidationError("patrol.rounds must be an integer >= 1")
 
-        self._validate_places_exist(normalized_places)
         return {
             "category": "patrol",
             "description": {
@@ -107,39 +175,67 @@ class WorkOrderToRmfRequestMapper:
 
     def _build_delivery_request(self, description: Any) -> dict[str, Any]:
         details = self._as_description_obj(description, "delivery")
-        pickup = details.get("pickup_place_name")
-        dropoff = details.get("dropoff_place_name")
-
-        if not isinstance(pickup, str) or not pickup.strip():
-            raise PayloadValidationError("delivery.pickup_place_name is required")
-        if not isinstance(dropoff, str) or not dropoff.strip():
-            raise PayloadValidationError("delivery.dropoff_place_name is required")
-
-        pickup_name = pickup.strip()
-        dropoff_name = dropoff.strip()
-        self._validate_places_exist([pickup_name, dropoff_name])
+        pickup_name = self._extract_delivery_place_name(
+            details,
+            primary_key="pickup",
+            legacy_key="pickup_place_name",
+            error_message="delivery.pickup_place_name or delivery.pickup.place is required",
+        )
+        dropoff_name = self._extract_delivery_place_name(
+            details,
+            primary_key="dropoff",
+            legacy_key="dropoff_place_name",
+            error_message="delivery.dropoff_place_name or delivery.dropoff.place is required",
+        )
 
         return {
             "category": "delivery",
             "description": {
-                "pickup_place_name": pickup_name,
-                "dropoff_place_name": dropoff_name,
+                "pickup": {
+                    "place": pickup_name,
+                    "payload": [],
+                },
+                "dropoff": {
+                    "place": dropoff_name,
+                    "payload": [],
+                },
             },
         }
 
+    @staticmethod
+    def _extract_delivery_place_name(
+        details: dict[str, Any],
+        *,
+        primary_key: str,
+        legacy_key: str,
+        error_message: str,
+    ) -> str:
+        primary_value = details.get(primary_key)
+        if isinstance(primary_value, dict):
+            place = primary_value.get("place")
+            if isinstance(place, str) and place.strip():
+                return place.strip()
+
+        legacy_value = details.get(legacy_key)
+        if isinstance(legacy_value, str) and legacy_value.strip():
+            return legacy_value.strip()
+
+        raise PayloadValidationError(error_message)
+
     def _build_clean_request(self, description: Any) -> dict[str, Any]:
         details = self._as_description_obj(description, "clean")
-        zone = details.get("cleaning_zone")
+        zone = details.get("zone")
+        if zone is None:
+            zone = details.get("cleaning_zone")
 
         if not isinstance(zone, str) or not zone.strip():
-            raise PayloadValidationError("clean.cleaning_zone is required")
+            raise PayloadValidationError("clean.zone is required")
 
         zone_name = zone.strip()
-        self._validate_places_exist([zone_name])
         return {
             "category": "clean",
             "description": {
-                "cleaning_zone": zone_name,
+                "zone": zone_name,
             },
         }
 
@@ -151,11 +247,49 @@ class WorkOrderToRmfRequestMapper:
             )
         return description
 
-    def _validate_places_exist(self, places: list[str]) -> None:
-        unknown = [place for place in places if place not in self.allowed_places]
-        if unknown:
-            raise PayloadValidationError(
-                "unknown katong_office place(s): " + ", ".join(unknown)
+    def _warn_for_unknown_places(self, tenant_id: str, request: dict[str, Any]) -> None:
+        valid_places = get_valid_places(tenant_id)
+
+        places_to_check: list[str] = []
+        category = request.get("category")
+        description = request.get("description")
+        if category == "patrol" and isinstance(description, dict):
+            places = description.get("places")
+            if isinstance(places, list):
+                places_to_check.extend([place for place in places if isinstance(place, str)])
+        elif category == "delivery" and isinstance(description, dict):
+            pickup = description.get("pickup")
+            dropoff = description.get("dropoff")
+            if isinstance(pickup, dict):
+                pickup_place = pickup.get("place")
+                if isinstance(pickup_place, str):
+                    places_to_check.append(pickup_place)
+            elif isinstance(pickup, str):
+                places_to_check.append(pickup)
+
+            if isinstance(dropoff, dict):
+                dropoff_place = dropoff.get("place")
+                if isinstance(dropoff_place, str):
+                    places_to_check.append(dropoff_place)
+            elif isinstance(dropoff, str):
+                places_to_check.append(dropoff)
+
+            legacy_pickup = description.get("pickup_place_name")
+            legacy_dropoff = description.get("dropoff_place_name")
+            if isinstance(legacy_pickup, str):
+                places_to_check.append(legacy_pickup)
+            if isinstance(legacy_dropoff, str):
+                places_to_check.append(legacy_dropoff)
+        elif category == "clean" and isinstance(description, dict):
+            zone = description.get("cleaning_zone")
+            if isinstance(zone, str):
+                places_to_check.append(zone)
+
+        unknown_places = sorted({place for place in places_to_check if place not in valid_places})
+        for place in unknown_places:
+            logging.warning(
+                "PLACE_VALIDATION_WARNING: place not in RMF map but forwarding anyway: %s",
+                place,
             )
 
     def _build_optional_request_fields(self, event: WorkOrderCreateEvent) -> dict[str, Any]:

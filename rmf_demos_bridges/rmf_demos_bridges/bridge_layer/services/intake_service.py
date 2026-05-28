@@ -86,8 +86,11 @@ class IntakeService:
 
         if category == "clean":
             details = IntakeService._task_details(task_obj, "clean")
+            zone = details.get("zone")
+            if zone is None:
+                zone = details.get("cleaning_zone")
             return {
-                "cleaning_zone": details.get("cleaning_zone"),
+                "zone": zone,
             }
 
         # Leave unknown categories untouched; mapper validation will reject them.
