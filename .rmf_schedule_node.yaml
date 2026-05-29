@@ -1,0 +1,45 @@
+- operation: Add
+  participant_description:
+    name: cleanerBotA_1
+    group: cleanerBotA
+    responsiveness: Responsive
+    profile:
+      footprint:
+        type: Circle
+        index: 0
+      vicinity:
+        type: Circle
+        index: 1
+      shape_context:
+        - 0.34999999999999998
+        - 0.5
+- operation: Add
+  participant_description:
+    name: TinyRobot1
+    group: TinyRobot
+    responsiveness: Responsive
+    profile:
+      footprint:
+        type: Circle
+        index: 0
+      vicinity:
+        type: Circle
+        index: 1
+      shape_context:
+        - 0.17999999999999999
+        - 0.28000000000000003
+- operation: Add
+  participant_description:
+    name: DeliveryRobot1
+    group: DeliveryRobot
+    responsiveness: Responsive
+    profile:
+      footprint:
+        type: Circle
+        index: 0
+      vicinity:
+        type: Circle
+        index: 1
+      shape_context:
+        - 0.25
+        - 0.34999999999999998
