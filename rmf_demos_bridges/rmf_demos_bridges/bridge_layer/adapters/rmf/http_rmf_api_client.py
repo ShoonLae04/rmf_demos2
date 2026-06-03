@@ -1,4 +1,6 @@
+import asyncio
 import json
+import time 
 from urllib import request, error
 
 
@@ -17,6 +19,41 @@ class HttpRmfApiClient:
     def get_task_state(self, task_id: str) -> dict[str, object]:
         return self._get_json(f"/tasks/{task_id}/state")
 
+    def cancel_task(self, task_id: str) -> dict[str, object]:
+        payload = {
+            "type": "cancel_task_request",
+            "task_id": task_id,
+            "labels": ["critical_preemption"]
+        }
+
+        return self._post_json(
+            "/tasks/cancel_task",
+            payload
+        )
+    def wait_until_idle(self, robot_name: str, timeout: float = 30.0) -> None:
+   
+
+        start = time.time()
+
+        while time.time() - start < timeout:
+            state = self._get_json(f"/robots/{robot_name}/state")
+
+            status = (
+                state.get("status")
+                or state.get("state")
+                or state.get("mode")
+                or state.get("activity")
+            )
+
+            print(f"[DEBUG] robot state = {state}")
+
+            if status in {"idle", "stopped", "ready"}:
+                return
+
+            time.sleep(0.5)
+
+        raise TimeoutError(f"Robot {robot_name} did not become idle: last state={state}")
+    
     def _post_json(self, path: str, payload: dict[str, object]) -> dict[str, object]:
         body = json.dumps(payload).encode("utf-8")
         headers = {

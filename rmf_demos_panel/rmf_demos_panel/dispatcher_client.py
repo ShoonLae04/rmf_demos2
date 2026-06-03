@@ -116,7 +116,7 @@ class DispatcherClient(Node):
         msg = ApiRequest()
         msg.request_id = "demos_" + str(uuid.uuid4())
         msg.json_msg = json.dumps(payload)
-        # self.task_api_req_pub.publish(msg)
+        self.task_api_req_pub.publish(msg)
 
         # TODO: check res from "/task_api_responses"
         #   cancellation is not fully tested in "rmf_ros2"
