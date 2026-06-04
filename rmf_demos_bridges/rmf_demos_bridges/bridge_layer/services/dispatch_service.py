@@ -1,3 +1,5 @@
+import asyncio
+
 from ..contracts.inbound import WorkOrderCreateEvent
 from ..contracts.ports import (
     BridgeRepositoryPort,
@@ -22,17 +24,118 @@ class DispatchService:
         self._dead_letter = dead_letter
         self._mapper = mapper
         self._active_tasks = {} 
+        self._interrupted_tasks = {}
 
     def get_active_task(self, robot):
         return self._active_tasks.get(robot)
 
 
-    def set_active_task(self, robot, task_id, priority):
+    def set_active_task(self, robot, task_id, priority, work_order_id,
+    event,):
         self._active_tasks[robot] = {
             "rmf_task_id": task_id,
-            "priority": priority
+            "priority": priority,
+            "work_order_id": work_order_id,
+            "original_event": event,
+            "status": "ACTIVE",
         }    
 
+    def bookmark_task(self, robot):
+
+        existing = self.get_active_task(robot)
+
+        if not existing:
+            return
+
+        self._interrupted_tasks[robot] = {
+            "original_task_id": existing["rmf_task_id"],
+            "priority": existing["priority"],
+            "event": existing["original_event"],
+            "status": "PENDING",
+        }
+
+    def handle_task_completed(self, robot):
+
+        logger = logging.getLogger("bridge_layer.dispatch")
+
+        bookmark = self._interrupted_tasks.get(robot)
+
+        if not bookmark:
+            logger.info(
+                "No interrupted task for robot %s",
+                robot
+            )
+            return
+
+        logger.info(
+            "Resuming interrupted task for robot %s",
+            robot
+        )
+
+        original_event = bookmark["event"]
+
+        payload = self._mapper.to_dispatch_payload(
+            original_event
+        )
+
+        response = self._rmf_api.dispatch_task(payload)
+
+        resumed_task_id = self._extract_task_id(response)
+
+        self.set_active_task(
+            robot=robot,
+            task_id=resumed_task_id,
+            priority=bookmark["priority"],
+            work_order_id=original_event.work_order.work_order_id,
+            event=original_event,
+        )
+
+        del self._interrupted_tasks[robot]
+        
+    async def monitor_tasks(self):
+
+        logger = logging.getLogger("bridge_layer.dispatch")
+
+        while True:
+
+            try:
+
+                for robot, task in list(self._active_tasks.items()):
+
+                    task_id = task["rmf_task_id"]
+
+                    state = self._rmf_api.get_task_state(
+                        task_id
+                    )
+
+                    logger.info(
+                        "TASK STATE %s = %s",
+                        task_id,
+                        state
+                    )
+                    status = state.get("status")
+
+                if status == "completed":
+                    logger.info(
+                        "TASK COMPLETED for robot %s task %s",
+                        robot,
+                        task_id
+                    )
+
+                    # prevent repeated triggers
+                    self._active_tasks.pop(robot, None)
+
+                    # trigger resume logic
+                    self.handle_task_completed(robot)
+
+            except Exception as e:
+
+                logger.error(
+                    "Monitor error: %s",
+                    e
+                )
+
+            await asyncio.sleep(2)
 
     def handle_create(self, event: WorkOrderCreateEvent) -> None:
         logger = logging.getLogger("bridge_layer.dispatch")
@@ -64,6 +167,12 @@ class DispatchService:
             if existing:
                 current_priority = existing.get("priority", 0)
                 active_task_id = existing.get("rmf_task_id")
+               
+
+            logger.info(
+                "INTERRUPTED TASKS = %s",
+                self._interrupted_tasks
+            )
 
             is_critical = priority > current_priority
             logger.info(
@@ -72,6 +181,7 @@ class DispatchService:
                 )
 
             if is_critical and robot and active_task_id:
+                self.bookmark_task(robot)
                 logger.warning(
                     "CRITICAL TASK: preempting active task %s for robot %s",
                     active_task_id,
@@ -111,7 +221,13 @@ class DispatchService:
                 tenant_id=event.tenant_id,
             )
             if robot:
-                self.set_active_task(robot, rmf_task_id, priority)
+                self.set_active_task(
+                    robot=robot,
+                    task_id=rmf_task_id,
+                    priority=priority,
+                    work_order_id=event.work_order.work_order_id,
+                    event=event,
+                )
 
             logger.info(
                 "Saved mapping work_order=%s -> rmf_task=%s",

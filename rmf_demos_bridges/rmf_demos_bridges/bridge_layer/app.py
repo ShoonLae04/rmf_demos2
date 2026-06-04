@@ -1,4 +1,9 @@
+import asyncio
 from dataclasses import dataclass
+import threading
+import logging
+
+
 
 from .config import BridgeConfig
 from .contracts.ports import (
@@ -14,6 +19,9 @@ from .services.intake_service import IntakeService
 from .services.status_service import StatusService
 
 
+def _start_monitor(dispatch_service):
+        asyncio.run(dispatch_service.monitor_tasks())
+        
 @dataclass
 class BridgeApp:
     config: BridgeConfig
@@ -27,6 +35,9 @@ class BridgeApp:
     def __post_init__(self) -> None:
         self._status_service: StatusService | None = None
 
+    
+   
+
     def start(self) -> None:
         import logging
         logger = logging.getLogger("bridge_layer.app")
@@ -36,6 +47,12 @@ class BridgeApp:
             dead_letter=self.dead_letter,
             mapper=self.wo_mapper,
         )
+        threading.Thread(
+            target=_start_monitor,
+            args=(dispatch_service,),
+            daemon=True,
+        ).start()
+        
         intake_service = IntakeService(
             dispatch_service=dispatch_service,
             dead_letter=self.dead_letter,
