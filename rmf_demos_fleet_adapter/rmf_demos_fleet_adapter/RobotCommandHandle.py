@@ -120,6 +120,8 @@ class RobotCommandHandle(adpt.RobotCommandHandle):
         self.action_waypoint_index = None
         self.current_cmd_id = 0
         self.started_action = False
+        self._idle_since = None 
+        self._task_cancelled = False
 
         # Threading variables
         self._lock = threading.Lock()
@@ -219,6 +221,15 @@ class RobotCommandHandle(adpt.RobotCommandHandle):
             plan_id = self.update_handle.unstable_current_plan_id()
             print(f'stop for {self.name} with PlanId {plan_id}')
 
+        self._task_cancelled = True  
+        # Anchor robot to last known waypoint so RMF plans direct path
+        with self._lock:
+            if self.last_known_waypoint_index is not None:
+                self.on_waypoint = self.last_known_waypoint_index
+                self.node.get_logger().info(
+                    f"[{self.name}] Anchoring to waypoint "
+                    f"{self.last_known_waypoint_index} after stop"
+                )
         self.interrupt()
         # Stop the robot. Tracking variables should remain unchanged.
         with self._lock:
@@ -233,6 +244,7 @@ class RobotCommandHandle(adpt.RobotCommandHandle):
                         break
                     self._quit_stopping_event.wait(0.1)
 
+                
             self._stopping_thread = threading.Thread(target=_stop)
             self._stopping_thread.start()
 
@@ -254,6 +266,42 @@ class RobotCommandHandle(adpt.RobotCommandHandle):
             waypoints,
             next_arrival_estimator,
             path_finished_callback):
+       
+
+        last_wp_index = (
+            waypoints[-1].graph_index if len(waypoints) > 0 else None
+        )
+       
+        is_going_to_charger = (
+            len(waypoints) > 0 and
+            waypoints[-1].graph_index == self.charger_waypoint_index
+        )
+        wp_indices = [wp.graph_index for wp in waypoints]
+        self.node.get_logger().info(
+            f"[{self.name}] follow_new_path waypoints={wp_indices} "
+            f"charger={self.charger_waypoint_index} "
+            f"battery={self.battery_soc*100:.1f}%"
+        )
+
+
+        if self._task_cancelled and not is_going_to_charger:
+            self.node.get_logger().info(
+                f"[{self.name}] Task was cancelled — "
+                f"rejecting non-charger path (last_wp={last_wp_index})"
+            )
+            return  # block this path, wait for correct park path
+
+        # Clear cancel flag when charger path accepted
+        if is_going_to_charger:
+            self._task_cancelled = False
+
+        if not is_going_to_charger and self.battery_soc < 0.70:
+            self.node.get_logger().info(
+                f"[{self.name}] Battery {self.battery_soc*100:.1f}%"
+                f" < 70% — rejecting task, keep charging"
+            )
+            return
+        
         if self.debug:
             plan_id = self.update_handle.unstable_current_plan_id()
             print(f'follow_new_path for {self.name} with PlanId {plan_id}')
@@ -408,6 +456,7 @@ class RobotCommandHandle(adpt.RobotCommandHandle):
             to initiate the robot specific process. This could be to start a
             cleaning process or load/unload a cart for delivery.
         '''
+        
         self.interrupt()
         with self._lock:
             self._quit_dock_event.clear()
@@ -422,6 +471,7 @@ class RobotCommandHandle(adpt.RobotCommandHandle):
             def _dock():
                 # Request the robot to start the relevant process
                 cmd_id = self.next_cmd_id()
+                
                 while not self.api.start_process(
                     self.name, cmd_id, self.dock_name, self.map_name
                 ):
@@ -448,10 +498,7 @@ class RobotCommandHandle(adpt.RobotCommandHandle):
                 positions = []
                 for wp in self.docks[self.dock_name]:
                     positions.append([wp.x, wp.y, wp.yaw])
-                self.node.get_logger().info(
-                    f"Robot {self.name} is docking at {self.dock_name}..."
-                )
-
+              
                 while not self.api.process_completed(self.name, cmd_id):
                     if len(positions) < 1:
                         break
@@ -522,6 +569,43 @@ class RobotCommandHandle(adpt.RobotCommandHandle):
 
     def update_state(self):
         self.update_handle.update_battery_soc(self.battery_soc)
+
+        # ── Return to charger if idle and not at charger
+        with self._lock:
+            is_idle = (
+                self.state == RobotState.IDLE and
+                self.action_execution is None and
+                (self._follow_path_thread is None or
+                not self._follow_path_thread.is_alive()) and
+                (self._dock_thread is None or
+                not self._dock_thread.is_alive()) and
+                self.on_waypoint != self.charger_waypoint_index
+            )
+
+        if is_idle:
+            now = self.node.get_clock().now()
+            if not hasattr(self, '_idle_since') or self._idle_since is None:
+                self._idle_since = now
+            else:
+                idle_seconds = (now - self._idle_since).nanoseconds / 1e9
+                if idle_seconds > 10.0:  # idle for 10 seconds
+                    self.node.get_logger().info(
+                        f"[{self.name}] Idle {idle_seconds:.0f}s"
+                        f" — replanning to return to charger"
+                    )
+                    self._idle_since = None
+                    self.last_replan_time = None  # reset cooldown
+                    if self.update_handle is not None:
+                        self.update_handle.replan()
+        else:
+            self._idle_since = None
+        # ─────────────────────────────────────────────────────────────
+
+
+
+
+
+
         # Update position
         with self._lock:
             if (self.on_waypoint is not None):  # if robot is on a waypoint

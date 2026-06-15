@@ -31,16 +31,16 @@ rmf_fleet:
   tool_system:
     power: 0.0 # W
   recharge_threshold: 0.20 # Battery level below which robots in this fleet will not operate
-  publish_fleet_state: 15.0 # Publish frequency for fleet state, ensure that it is same as robot_state_update_frequency
-  recharge_soc: 0.95 # Battery level to which robots in this fleet should be charged up to during recharging tasks. Allow follow-up tasks without blocking on full 100% charge
-  account_for_battery_drain: False # DISABLED for faster testing: skip battery depletion simulation
+  
+  recharge_soc: 0.8 # Battery level to which robots in this fleet should be charged up to during recharging tasks. Allow follow-up tasks without blocking on full 100% charge
+  account_for_battery_drain: True # DISABLED for faster testing: skip battery depletion simulation
   publish_fleet_state: 15.0 # Publish frequency for fleet state, ensure that it is same as robot_state_update_frequency
   lane_merge_distance: 0.12
   task_capabilities: # Specify the types of RMF Tasks that robots in this fleet are capable of performing
     loop: False
     delivery: False
     clean: True
-    finishing_request: "charge" # [park, charge, nothing]
+    finishing_request: "park" # [park, charge, nothing]
 
 # CleanerBotA CONFIG =================================================================
 

@@ -30,7 +30,7 @@ rmf_fleet:
   tool_system:
     power: 0.0 # W
   recharge_threshold: 0.10 # Battery level below which robots in this fleet will not operate
-  recharge_soc: 1.0 # Battery level to which robots in this fleet should be charged up to during recharging tasks
+  recharge_soc: 0.8 # Battery level to which robots in this fleet should be charged up to during recharging tasks
   publish_fleet_state: 15.0 # Publish frequency for fleet state, ensure that it is same as robot_state_update_frequency
   account_for_battery_drain: True
   lane_merge_distance: 0.12
@@ -38,7 +38,7 @@ rmf_fleet:
     loop: False
     delivery: True
     clean: False
-    finishing_request: "charge" # [park, charge, nothing]
+    finishing_request: "park" # [park, charge, nothing]
 
 # TinyRobot CONFIG =================================================================
 
