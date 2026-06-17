@@ -284,12 +284,12 @@ class RobotCommandHandle(adpt.RobotCommandHandle):
         )
 
 
-        if self._task_cancelled and not is_going_to_charger:
-            self.node.get_logger().info(
-                f"[{self.name}] Task was cancelled — "
-                f"rejecting non-charger path (last_wp={last_wp_index})"
-            )
-            return  # block this path, wait for correct park path
+        #if self._task_cancelled and not is_going_to_charger:
+            #self.node.get_logger().info(
+                #f"[{self.name}] Task was cancelled — "
+                #f"rejecting non-charger path (last_wp={last_wp_index})"
+            #)
+            #return  # block this path, wait for correct park path
 
         # Clear cancel flag when charger path accepted
         if is_going_to_charger:
